@@ -1539,20 +1539,75 @@ export default function (pi: ExtensionAPI) {
 		clearLastAnalyzedStateCache();
 	});
 
+	type HookFlagValue = boolean | string | undefined;
+	type HookUi = {
+		notify?: (msg: string, level: "info" | "warning" | "error") => void;
+		setStatus?: (id: string, text: string | undefined) => void;
+		theme?: {
+			fg: (color: "accent" | "success" | "error", text: string) => string;
+		};
+	};
+
+	const startupFlagValues = new Map<string, HookFlagValue>();
+	for (const name of ["no-autoformat", "no-read-guard", "no-lsp", "no-tests"]) {
+		try {
+			startupFlagValues.set(name, pi.getFlag(name) as HookFlagValue);
+		} catch {
+			startupFlagValues.set(name, false);
+		}
+	}
+
+	const snapshotFlags = (names: string[]) => {
+		const values = new Map<string, HookFlagValue>();
+		for (const name of names) {
+			try {
+				values.set(name, pi.getFlag(name) as HookFlagValue);
+			} catch {
+				values.set(name, startupFlagValues.get(name) ?? false);
+			}
+		}
+		return (name: string) =>
+			values.get(name) ?? startupFlagValues.get(name) ?? false;
+	};
+
+	const snapshotEventContext = (
+		eventName: string,
+		ctx: { cwd?: string; ui?: HookUi },
+	): { ctxCwd: string | undefined; ctxUi: HookUi | undefined } => {
+		let ctxCwd: string | undefined;
+		let ctxUi: HookUi | undefined;
+		try {
+			ctxCwd = ctx.cwd;
+		} catch {
+			ctxCwd = process.cwd();
+			dbg(`${eventName}: ctx cwd unavailable; using process.cwd() fallback`);
+		}
+		try {
+			ctxUi = ctx.ui;
+		} catch {
+			dbg(`${eventName}: ctx ui unavailable; skipping ui updates`);
+		}
+		return { ctxCwd, ctxUi };
+	};
+
 	pi.on("agent_end", async (_event, ctx) => {
 		if (!lensEnabled) return;
 		try {
+			const { ctxCwd, ctxUi } = snapshotEventContext("agent_end", ctx);
+			const getFlag = snapshotFlags(["no-autoformat", "no-read-guard", "no-lsp"]);
 			await handleAgentEnd({
-				ctxCwd: ctx.cwd,
-				getFlag: (name: string) => pi.getFlag(name),
-				notify: (msg, level) => ctx.ui.notify(msg, level),
+				ctxCwd,
+				getFlag,
+				notify: (msg, level) => ctxUi?.notify?.(msg, level),
 				dbg,
 				runtime,
 				cacheManager,
 				getFormatService: () =>
 					getFormatService(runtime.telemetrySessionId, true),
 			});
-			ctx.ui && updateLspStatus(ctx.ui.setStatus, ctx.ui.theme);
+			if (ctxUi?.setStatus && ctxUi.theme) {
+				updateLspStatus(ctxUi.setStatus, ctxUi.theme);
+			}
 		} catch (agentEndErr) {
 			dbg(`agent_end crashed: ${agentEndErr}`);
 			dbg(`agent_end crash stack: ${(agentEndErr as Error).stack}`);
@@ -1562,11 +1617,13 @@ export default function (pi: ExtensionAPI) {
 	pi.on("turn_end", async (_event: any, ctx) => {
 		if (!lensEnabled) return;
 		try {
+			const { ctxCwd, ctxUi } = snapshotEventContext("turn_end", ctx);
+			const getFlag = snapshotFlags(["no-lsp", "no-tests"]);
 			const { knipClient, depChecker, testRunnerClient } =
 				await loadBootstrapClients();
 			await handleTurnEnd({
-				ctxCwd: ctx.cwd,
-				getFlag: (name: string) => pi.getFlag(name),
+				ctxCwd,
+				getFlag,
 				dbg,
 				runtime,
 				cacheManager,
@@ -1576,7 +1633,9 @@ export default function (pi: ExtensionAPI) {
 				resetLSPService,
 				resetFormatService,
 			});
-			ctx.ui && updateLspStatus(ctx.ui.setStatus, ctx.ui.theme);
+			if (ctxUi?.setStatus && ctxUi.theme) {
+				updateLspStatus(ctxUi.setStatus, ctxUi.theme);
+			}
 		} catch (turnEndErr) {
 			dbg(`turn_end crashed: ${turnEndErr}`);
 			dbg(`turn_end crash stack: ${(turnEndErr as Error).stack}`);

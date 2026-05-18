@@ -1051,4 +1051,250 @@ describe("index.ts integration", () => {
 		expect(message).toContain("Cascade diagnostics surfaced: 3");
 		expect(message).toContain("Cold-snapshot touches: 2");
 	}, 15_000);
+
+	it("turn_end snapshots ctx and flags before awaiting bootstrap clients", async () => {
+		let stale = false;
+		const staleAccesses: string[] = [];
+		let turnEndFlagValue: boolean | string | undefined;
+		let turnEndFlagError: unknown;
+
+		const handleTurnEndMock = vi.fn(
+			async (deps: {
+				ctxCwd?: string;
+				getFlag: (name: string) => boolean | string | undefined;
+			}) => {
+				expect(deps.ctxCwd).toBe(tmpDir);
+				try {
+					turnEndFlagValue = deps.getFlag("no-tests");
+				} catch (err) {
+					turnEndFlagError = err;
+				}
+			},
+		);
+
+		vi.doMock("../clients/runtime-turn.js", () => ({
+			handleTurnEnd: handleTurnEndMock,
+			cancelLSPIdleReset: vi.fn(),
+		}));
+		vi.doMock("../clients/bootstrap.js", () => ({
+			loadBootstrapClients: async () => {
+				await Promise.resolve();
+				stale = true;
+				return {
+					knipClient: {},
+					depChecker: {},
+					testRunnerClient: {},
+				};
+			},
+		}));
+
+		const { default: registerExtension } = await import("../index.ts");
+		const { pi, handlers } = createMockPi({ "no-tests": true });
+		pi.getFlag.mockImplementation((name: string) => {
+			if (stale) throw new Error(`stale flag access: ${name}`);
+			if (name === "no-tests") return true;
+			return false;
+		});
+		registerExtension(pi as any);
+
+		const ui = {
+			notify: vi.fn(),
+			setStatus: vi.fn(),
+			theme: { fg: (_color: "accent" | "success" | "error", text: string) => text },
+		};
+		const ctx = {
+			get cwd() {
+				if (stale) {
+					staleAccesses.push("cwd");
+					throw new Error("stale ctx cwd");
+				}
+				return tmpDir;
+			},
+			get ui() {
+				if (stale) {
+					staleAccesses.push("ui");
+					throw new Error("stale ctx ui");
+				}
+				return ui;
+			},
+		};
+
+		await handlers.turn_end?.[0]?.({}, ctx);
+
+		expect(handleTurnEndMock).toHaveBeenCalledTimes(1);
+		expect(turnEndFlagError).toBeUndefined();
+		expect(turnEndFlagValue).toBe(true);
+		expect(staleAccesses).toEqual([]);
+	}, 15_000);
+
+	it("agent_end uses snapshot-backed flags and ui callbacks during deferred work", async () => {
+		let stale = false;
+		const staleAccesses: string[] = [];
+		let agentEndFlagValue: boolean | string | undefined;
+		let agentEndFlagError: unknown;
+		let notifyError: unknown;
+
+		const handleAgentEndMock = vi.fn(
+			async (deps: {
+				ctxCwd?: string;
+				getFlag: (name: string) => boolean | string | undefined;
+				notify: (msg: string, level: "info" | "warning" | "error") => void;
+			}) => {
+				expect(deps.ctxCwd).toBe(tmpDir);
+				stale = true;
+				try {
+					agentEndFlagValue = deps.getFlag("no-autoformat");
+				} catch (err) {
+					agentEndFlagError = err;
+				}
+				try {
+					deps.notify("deferred format done", "info");
+				} catch (err) {
+					notifyError = err;
+				}
+			},
+		);
+
+		vi.doMock("../clients/runtime-agent-end.js", () => ({
+			handleAgentEnd: handleAgentEndMock,
+		}));
+
+		const { default: registerExtension } = await import("../index.ts");
+		const { pi, handlers } = createMockPi({ "no-autoformat": true });
+		pi.getFlag.mockImplementation((name: string) => {
+			if (stale) throw new Error(`stale flag access: ${name}`);
+			if (name === "no-autoformat") return true;
+			return false;
+		});
+		registerExtension(pi as any);
+
+		const ui = {
+			notify: vi.fn(),
+			setStatus: vi.fn(),
+			theme: { fg: (_color: "accent" | "success" | "error", text: string) => text },
+		};
+		const ctx = {
+			get cwd() {
+				if (stale) {
+					staleAccesses.push("cwd");
+					throw new Error("stale ctx cwd");
+				}
+				return tmpDir;
+			},
+			get ui() {
+				if (stale) {
+					staleAccesses.push("ui");
+					throw new Error("stale ctx ui");
+				}
+				return ui;
+			},
+		};
+
+		await handlers.agent_end?.[0]?.({}, ctx);
+
+		expect(handleAgentEndMock).toHaveBeenCalledTimes(1);
+		expect(agentEndFlagError).toBeUndefined();
+		expect(agentEndFlagValue).toBe(true);
+		expect(notifyError).toBeUndefined();
+		expect(ui.notify).toHaveBeenCalledWith("deferred format done", "info");
+		expect(staleAccesses).toEqual([]);
+	}, 15_000);
+
+	it("turn_end falls back when ctx and pi flags are already stale", async () => {
+		let stale = false;
+		let turnEndFlagValue: boolean | string | undefined;
+		const expectedFallbackCwd = process.cwd();
+
+		const handleTurnEndMock = vi.fn(
+			async (deps: {
+				ctxCwd?: string;
+				getFlag: (name: string) => boolean | string | undefined;
+			}) => {
+				expect(deps.ctxCwd).toBe(expectedFallbackCwd);
+				turnEndFlagValue = deps.getFlag("no-tests");
+			},
+		);
+
+		vi.doMock("../clients/runtime-turn.js", () => ({
+			handleTurnEnd: handleTurnEndMock,
+			cancelLSPIdleReset: vi.fn(),
+		}));
+		vi.doMock("../clients/bootstrap.js", () => ({
+			loadBootstrapClients: async () => ({
+				knipClient: {},
+				depChecker: {},
+				testRunnerClient: {},
+			}),
+		}));
+
+		const { default: registerExtension } = await import("../index.ts");
+		const { pi, handlers } = createMockPi({ "no-tests": true });
+		pi.getFlag.mockImplementation((name: string) => {
+			if (stale) throw new Error(`stale flag access: ${name}`);
+			if (name === "no-tests") return true;
+			return false;
+		});
+		registerExtension(pi as any);
+
+		stale = true;
+		const ctx = {
+			get cwd() {
+				throw new Error("stale ctx cwd");
+			},
+			get ui() {
+				throw new Error("stale ctx ui");
+			},
+		};
+
+		await handlers.turn_end?.[0]?.({}, ctx);
+
+		expect(handleTurnEndMock).toHaveBeenCalledTimes(1);
+		expect(turnEndFlagValue).toBe(true);
+	}, 15_000);
+
+	it("agent_end falls back when ctx and pi flags are already stale", async () => {
+		let stale = false;
+		let agentEndFlagValue: boolean | string | undefined;
+		const expectedFallbackCwd = process.cwd();
+
+		const handleAgentEndMock = vi.fn(
+			async (deps: {
+				ctxCwd?: string;
+				getFlag: (name: string) => boolean | string | undefined;
+				notify: (msg: string, level: "info" | "warning" | "error") => void;
+			}) => {
+				expect(deps.ctxCwd).toBe(expectedFallbackCwd);
+				agentEndFlagValue = deps.getFlag("no-autoformat");
+				deps.notify("message after stale ctx", "info");
+			},
+		);
+
+		vi.doMock("../clients/runtime-agent-end.js", () => ({
+			handleAgentEnd: handleAgentEndMock,
+		}));
+
+		const { default: registerExtension } = await import("../index.ts");
+		const { pi, handlers } = createMockPi({ "no-autoformat": true });
+		pi.getFlag.mockImplementation((name: string) => {
+			if (stale) throw new Error(`stale flag access: ${name}`);
+			if (name === "no-autoformat") return true;
+			return false;
+		});
+		registerExtension(pi as any);
+
+		stale = true;
+		const ctx = {
+			get cwd() {
+				throw new Error("stale ctx cwd");
+			},
+			get ui() {
+				throw new Error("stale ctx ui");
+			},
+		};
+
+		await handlers.agent_end?.[0]?.({}, ctx);
+
+		expect(handleAgentEndMock).toHaveBeenCalledTimes(1);
+		expect(agentEndFlagValue).toBe(true);
+	}, 15_000);
 });
