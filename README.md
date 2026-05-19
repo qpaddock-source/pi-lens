@@ -95,7 +95,7 @@ Detection rules:
 
 - **Config-gated**: only runs when project config indicates usage (e.g. `biome.json`, `.prettierrc`, `ruff.toml`)
 - **Nearest-wins**: when multiple formatter configs exist at different directory levels, the one closest to the edited file wins
-- **Biome-default**: for JS/TS files without Prettier or Biome config, Biome is used as the default formatter
+- **Prettier-default**: for JS/TS, JSON/JSONC, CSS/SCSS/Sass, Vue/Svelte, and other Prettier-supported web/content files without explicit formatter config, Prettier is used as the default formatter
 - **Ruff-default**: for Python files without Black config, Ruff format is used when available
 
 ### Review Graph - Cascade Diagnostics
@@ -127,12 +127,14 @@ Supported: TypeScript, TSX, JavaScript, JSX, Python, Go, Rust, Ruby.
 Covers JavaScript/TypeScript, Python, Go, Rust, Ruby, Shell, and CMake. A TypeScript AST-based fact-rule engine extracts function-level metrics and evaluates quality and security rules inline. Blocking rules surface immediately at write time; advisory rules are available via `/lens-booboo`.
 
 **Blocking (surface inline at write time):**
+
 - **cors-wildcard** — `Access-Control-Allow-Origin: *` in server-side code
 - **error-swallowing** — empty catch block (skips documented local fallbacks and fs-boundary catches)
 - **no-commented-credentials** — password/token/secret in commented-out code
 - **high-entropy-string** — string literals with suspiciously high Shannon entropy (possible hardcoded secret)
 
 **Advisory (accessible via `/lens-booboo`):**
+
 - **high-complexity** / **no-complex-conditionals** — cyclomatic complexity and deeply nested conditions
 - **high-fan-out** — function calls too many distinct functions (coordination smell)
 - **unsafe-boundary** — dangerous `any` casts at API boundaries

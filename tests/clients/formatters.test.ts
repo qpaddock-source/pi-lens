@@ -329,16 +329,22 @@ describe("resolveCommand — walk-up from subdirectory", () => {
 // ---------------------------------------------------------------------------
 
 describe("getFormattersForFile — policy selection", () => {
-	it("uses biome as the smart default for unconfigured TypeScript files", async () => {
+	it("uses prettier as the smart default for unconfigured TypeScript files", async () => {
 		const filePath = fileIn(tmpDir, "index.ts");
 		const formatters = await getFormattersForFile(filePath, tmpDir);
-		expect(formatters.map((f) => f.name)).toEqual(["biome"]);
+		expect(formatters.map((f) => f.name)).toEqual(["prettier"]);
 	});
 
-	it("uses biome as the smart default for unconfigured CSS files", async () => {
-		const filePath = fileIn(tmpDir, "styles.css");
-		const formatters = await getFormattersForFile(filePath, tmpDir);
-		expect(formatters.map((f) => f.name)).toEqual(["biome"]);
+	it("uses prettier as the smart default for unconfigured CSS-family files", async () => {
+		const cases = ["styles.css", "styles.scss", "styles.sass"];
+		for (const fileName of cases) {
+			const filePath = fileIn(tmpDir, fileName);
+			const formatters = await getFormattersForFile(filePath, tmpDir);
+			expect(
+				formatters.map((f) => f.name),
+				fileName,
+			).toEqual(["prettier"]);
+		}
 	});
 
 	it("uses ruff as the smart default for unconfigured Python files", async () => {
@@ -347,10 +353,16 @@ describe("getFormattersForFile — policy selection", () => {
 		expect(formatters.map((f) => f.name)).toEqual(["ruff"]);
 	});
 
-	it("does not force a formatter for unconfigured JSON files", async () => {
-		const filePath = fileIn(tmpDir, "config.json");
-		const formatters = await getFormattersForFile(filePath, tmpDir);
-		expect(formatters).toEqual([]);
+	it("uses prettier as the smart default for unconfigured JSON files", async () => {
+		const cases = ["config.json", "config.jsonc"];
+		for (const fileName of cases) {
+			const filePath = fileIn(tmpDir, fileName);
+			const formatters = await getFormattersForFile(filePath, tmpDir);
+			expect(
+				formatters.map((f) => f.name),
+				fileName,
+			).toEqual(["prettier"]);
+		}
 	});
 
 	it("uses prettier as the smart default for unconfigured HTML files", async () => {
@@ -542,6 +554,18 @@ describe("getFormattersForFile — policy selection", () => {
 		expect(formatters.map((f) => f.name)).toEqual(["black"]);
 	});
 
+	it("uses prettier as the smart default for unconfigured Vue and Svelte files", async () => {
+		const cases = ["App.vue", "App.svelte"];
+		for (const fileName of cases) {
+			const filePath = fileIn(tmpDir, fileName);
+			const formatters = await getFormattersForFile(filePath, tmpDir);
+			expect(
+				formatters.map((f) => f.name),
+				fileName,
+			).toEqual(["prettier"]);
+		}
+	});
+
 	it("does not activate biome smart-default when prettier has explicit config in cwd", async () => {
 		createTempFile(tmpDir, ".prettierrc", "{}");
 		const filePath = fileIn(tmpDir, "index.ts");
@@ -635,7 +659,6 @@ describe("getFormattersForFile — policy selection", () => {
 
 	it("keeps config-first formatters disabled without explicit config", async () => {
 		const cases: Array<[string, string]> = [
-			["config.json", ".json"],
 			["query.sql", ".sql"],
 			["main.cpp", ".cpp"],
 			["index.php", ".php"],
@@ -880,10 +903,10 @@ describe("oxfmt formatter — detection and policy selection", () => {
 		expect(formatters.map((f) => f.name)).toEqual(["biome"]);
 	});
 
-	it("biome is still the smart default when oxfmt is absent", async () => {
+	it("prettier is the smart default when oxfmt is absent", async () => {
 		const filePath = fileIn(tmpDir, "index.ts");
 		const formatters = await getFormattersForFile(filePath, tmpDir);
-		expect(formatters.map((f) => f.name)).toEqual(["biome"]);
+		expect(formatters.map((f) => f.name)).toEqual(["prettier"]);
 	});
 
 	it("resolveCommand prefers node_modules/.bin/oxfmt", async () => {

@@ -50,10 +50,16 @@ import { createTempFile, setupTestEnvironment } from "./test-utils.js";
 
 describe("tool-policy", () => {
 	it("defines smart default formatters for unconfigured JS/TS, Python, web/content, and expanded language set", () => {
-		expect(getSmartDefaultFormatterName("/tmp/file.ts")).toBe("biome");
+		expect(getSmartDefaultFormatterName("/tmp/file.ts")).toBe("prettier");
 		expect(getSmartDefaultFormatterName("/tmp/file.py")).toBe("ruff");
-		expect(getSmartDefaultFormatterName("/tmp/file.css")).toBe("biome");
+		expect(getSmartDefaultFormatterName("/tmp/file.json")).toBe("prettier");
+		expect(getSmartDefaultFormatterName("/tmp/file.jsonc")).toBe("prettier");
+		expect(getSmartDefaultFormatterName("/tmp/file.css")).toBe("prettier");
+		expect(getSmartDefaultFormatterName("/tmp/file.scss")).toBe("prettier");
+		expect(getSmartDefaultFormatterName("/tmp/file.sass")).toBe("prettier");
 		expect(getSmartDefaultFormatterName("/tmp/file.less")).toBe("prettier");
+		expect(getSmartDefaultFormatterName("/tmp/file.vue")).toBe("prettier");
+		expect(getSmartDefaultFormatterName("/tmp/file.svelte")).toBe("prettier");
 		expect(getSmartDefaultFormatterName("/tmp/file.html")).toBe("prettier");
 		expect(getSmartDefaultFormatterName("/tmp/file.yaml")).toBe("prettier");
 		expect(getSmartDefaultFormatterName("/tmp/file.md")).toBe("prettier");
@@ -75,7 +81,6 @@ describe("tool-policy", () => {
 	});
 
 	it("does not force a no-config default for config-first formats", () => {
-		expect(getSmartDefaultFormatterName("/tmp/file.json")).toBeUndefined();
 		expect(getSmartDefaultFormatterName("/tmp/file.sql")).toBeUndefined();
 		expect(getSmartDefaultFormatterName("/tmp/file.cpp")).toBeUndefined();
 		expect(getSmartDefaultFormatterName("/tmp/file.php")).toBeUndefined();
@@ -98,7 +103,7 @@ describe("tool-policy", () => {
 
 	it("returns formatter policy metadata by file path", () => {
 		expect(getFormatterPolicyForFile("/tmp/file.ts")).toMatchObject({
-			defaultFormatter: "biome",
+			defaultFormatter: "prettier",
 			defaultWhenUnconfigured: true,
 		});
 		expect(getFormatterPolicyForFile("/tmp/file.py")).toMatchObject({
@@ -110,7 +115,15 @@ describe("tool-policy", () => {
 			defaultWhenUnconfigured: true,
 		});
 		expect(getFormatterPolicyForFile("/tmp/file.css")).toMatchObject({
-			defaultFormatter: "biome",
+			defaultFormatter: "prettier",
+			defaultWhenUnconfigured: true,
+		});
+		expect(getFormatterPolicyForFile("/tmp/file.json")).toMatchObject({
+			defaultFormatter: "prettier",
+			defaultWhenUnconfigured: true,
+		});
+		expect(getFormatterPolicyForFile("/tmp/file.vue")).toMatchObject({
+			defaultFormatter: "prettier",
 			defaultWhenUnconfigured: true,
 		});
 		expect(getFormatterPolicyForFile("/tmp/file.html")).toMatchObject({
