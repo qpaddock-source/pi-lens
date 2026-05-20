@@ -594,6 +594,40 @@ describe("lsp server policy", () => {
 		await expect(PythonJediServer.root(file)).resolves.toBe(path.dirname(file));
 	});
 
+	it("launches jedi-language-server from managed install when PATH is missing", async () => {
+		const { PythonJediServer } = await import("../../../clients/lsp/server.js");
+		const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-lens-jedi-lsp-"));
+		dirs.push(tmp);
+		const managedPath = path.join(tmp, "bin", "jedi-language-server");
+
+		ensureTool.mockResolvedValue(managedPath);
+		launchLSP.mockImplementation(async (command: string) => {
+			if (command === "jedi-language-server") {
+				throw new Error("jedi-language-server not found");
+			}
+			if (command === managedPath) {
+				return {
+					process: { killed: false } as never,
+					stdin: {} as never,
+					stdout: {} as never,
+					stderr: {} as never,
+					pid: 2222,
+				};
+			}
+			throw new Error(`unexpected command: ${command}`);
+		});
+
+		const spawned = await PythonJediServer.spawn(tmp, { allowInstall: true });
+
+		expect(spawned).toBeDefined();
+		expect(ensureTool).toHaveBeenCalledWith("jedi-language-server");
+		expect(launchLSP).toHaveBeenCalledWith(
+			managedPath,
+			[],
+			expect.objectContaining({ cwd: tmp }),
+		);
+	});
+
 	it("launches taplo LSP from managed taplo install", async () => {
 		const { TomlServer } = await import("../../../clients/lsp/server.js");
 		const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-lens-taplo-lsp-"));

@@ -4,6 +4,7 @@ vi.unmock("../../../clients/installer/index.ts");
 
 const MANAGED_LSP_TOOL_IDS = [
 	"pyright",
+	"jedi-language-server",
 	"rust-analyzer",
 	"intelephense",
 	"bash-language-server",

@@ -1024,17 +1024,23 @@ export const PythonJediServer: LSPServerInfo = {
 			"poetry.lock",
 		]),
 	),
-	async spawn(root) {
-		try {
-			const proc = await launchLSP("jedi-language-server", [], { cwd: root });
-			const pythonPath = await detectPythonVenv(root);
-			const initialization: Record<string, unknown> = pythonPath
-				? { workspace: { environmentPath: pythonPath } }
-				: {};
-			return { process: proc, source: "direct", initialization };
-		} catch {
-			return undefined;
-		}
+	async spawn(root, options) {
+		const resolved = await resolveAndLaunch(
+			{
+				candidates: ["jedi-language-server"],
+				args: [],
+				cwd: root,
+				managedToolId: "jedi-language-server",
+			},
+			options?.allowInstall,
+		);
+		if (!resolved) return undefined;
+
+		const pythonPath = await detectPythonVenv(root);
+		const initialization: Record<string, unknown> = pythonPath
+			? { workspace: { environmentPath: pythonPath } }
+			: {};
+		return { process: resolved.process, source: resolved.source, initialization };
 	},
 };
 

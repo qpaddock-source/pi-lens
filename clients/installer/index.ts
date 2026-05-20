@@ -151,6 +151,15 @@ const TOOLS: ToolDefinition[] = [
 		packageName: "pyright",
 		binaryName: "pyright",
 	},
+	{
+		id: "jedi-language-server",
+		name: "Jedi Language Server",
+		checkCommand: "jedi-language-server",
+		checkArgs: ["--version"],
+		installStrategy: "pip",
+		packageName: "jedi-language-server",
+		binaryName: "jedi-language-server",
+	},
 	// Linting/formatting tools
 	{
 		id: "prettier",

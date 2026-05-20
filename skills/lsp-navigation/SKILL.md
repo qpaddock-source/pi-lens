@@ -1,6 +1,6 @@
 ---
 name: lsp-navigation
-description: Navigate code with IDE features - definitions, references, types, call hierarchy. Use as PRIMARY for code intelligence.
+description: Use when needing IDE-style code intelligence such as definitions, references, types, call hierarchy, symbols, diagnostics, signature help, implementations, or safe renames.
 ---
 
 # LSP Navigation
@@ -11,20 +11,20 @@ Use `lsp_navigation` as **PRIMARY** for code intelligence. Do NOT use grep/glob/
 
 ## When to Use (Code Intelligence)
 
-| Question | Operation | Parameters |
-|----------|-----------|------------|
-| "Where is this defined?" | `definition` | filePath, line, character |
-| "Find all usages" | `references` | filePath, line, character |
-| "What type is this?" | `hover` | filePath, line, character |
-| "Show call signature here" | `signatureHelp` | filePath, line, character (at call-site args) |
-| "What symbols in this file?" | `documentSymbol` | filePath |
-| "Find symbol across project" | `workspaceSymbol` | query + **filePath strongly recommended** |
-| "What quick fixes are available?" | `codeAction` | filePath, line, character, endLine, endCharacter |
-| "Rename symbol safely" | `rename` | filePath, line, character, newName |
-| "Who implements this interface?" | `implementation` | filePath, line, character |
-| "Who calls this function?" | `prepareCallHierarchy` → `incomingCalls` | filePath, line, character |
-| "What does this function call?" | `prepareCallHierarchy` → `outgoingCalls` | filePath, line, character |
-| "Show tracked LSP diagnostics" | `workspaceDiagnostics` | optional filePath (snapshot, not full pull workspace) |
+| Question                          | Operation                                | Parameters                                            |
+| --------------------------------- | ---------------------------------------- | ----------------------------------------------------- |
+| "Where is this defined?"          | `definition`                             | filePath, line, character                             |
+| "Find all usages"                 | `references`                             | filePath, line, character                             |
+| "What type is this?"              | `hover`                                  | filePath, line, character                             |
+| "Show call signature here"        | `signatureHelp`                          | filePath, line, character (at call-site args)         |
+| "What symbols in this file?"      | `documentSymbol`                         | filePath                                              |
+| "Find symbol across project"      | `workspaceSymbol`                        | query + **filePath strongly recommended**             |
+| "What quick fixes are available?" | `codeAction`                             | filePath, line, character, endLine, endCharacter      |
+| "Rename symbol safely"            | `rename`                                 | filePath, line, character, newName                    |
+| "Who implements this interface?"  | `implementation`                         | filePath, line, character                             |
+| "Who calls this function?"        | `prepareCallHierarchy` → `incomingCalls` | filePath, line, character                             |
+| "What does this function call?"   | `prepareCallHierarchy` → `outgoingCalls` | filePath, line, character                             |
+| "Show tracked LSP diagnostics"    | `workspaceDiagnostics`                   | optional filePath (snapshot, not full pull workspace) |
 
 ## Operational Guidance (From Field Tests)
 
@@ -44,30 +44,30 @@ const items = await lsp_navigation({
   operation: "prepareCallHierarchy",
   filePath: "src/api.ts",
   line: 42,
-  character: 10
+  character: 10,
 });
 
 // Step 2: Get callers (who calls this function)
 const callers = await lsp_navigation({
   operation: "incomingCalls",
-  callHierarchyItem: items[0]
+  callHierarchyItem: items[0],
 });
 
 // Step 2: Get callees (what this function calls)
 const callees = await lsp_navigation({
   operation: "outgoingCalls",
-  callHierarchyItem: items[0]
+  callHierarchyItem: items[0],
 });
 ```
 
 ## When NOT to Use LSP
 
-| Task | Use Instead | Why |
-|------|-------------|-----|
+| Task                        | Use Instead       | Why              |
+| --------------------------- | ----------------- | ---------------- |
 | Find patterns (console.log) | `ast_grep_search` | Pattern matching |
-| Find text/TODOs | `grep` | Text search |
-| Find files by name | `glob` | File discovery |
-| Read file content | `read` | Direct access |
+| Find text/TODOs             | `grep`            | Text search      |
+| Find files by name          | `glob`            | File discovery   |
+| Read file content           | `read`            | Direct access    |
 
 ## Golden Rule
 
