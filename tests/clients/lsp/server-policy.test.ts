@@ -41,6 +41,18 @@ afterEach(() => {
 });
 
 describe("lsp server policy", () => {
+	it("prefers pyright before jedi for Python files", async () => {
+		const { getServersForFile } = await import(
+			"../../../clients/lsp/server.js"
+		);
+
+		const pythonServerIds = getServersForFile("example.py").map(
+			(server) => server.id,
+		);
+
+		expect(pythonServerIds.slice(0, 2)).toEqual(["python", "python-jedi"]);
+	});
+
 	it("every built-in server has a spawn function", async () => {
 		const { LSP_SERVERS } = await import("../../../clients/lsp/server.js");
 		const missing = LSP_SERVERS.filter(
@@ -564,6 +576,9 @@ describe("lsp server policy", () => {
 		const spawned = await PythonServer.spawn(tmp, { allowInstall: true });
 
 		expect(spawned).toBeDefined();
+		expect(spawned?.initialization).toMatchObject({
+			openFilesOnly: true,
+		});
 		expect(ensureTool).toHaveBeenCalledWith("pyright");
 		expect(
 			launchLSP.mock.calls.some(
