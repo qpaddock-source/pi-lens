@@ -31,6 +31,8 @@ export interface LSPServerInfo {
 	name: string;
 	extensions: readonly string[];
 	root: RootFunction;
+	/** Server ID that must be unavailable before this fallback is attempted. */
+	fallbackFor?: string;
 	/** Simple command name whose absence disables spawn attempts briefly across roots. */
 	availabilityKey?: string;
 	/**
@@ -1087,6 +1089,7 @@ export const PythonJediServer: LSPServerInfo = {
 	id: "python-jedi",
 	name: "Jedi Language Server",
 	extensions: KIND_EXTENSIONS["python"],
+	fallbackFor: "python",
 	root: RootWithFallback(
 		createRootDetector([
 			".git",

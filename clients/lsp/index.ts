@@ -355,20 +355,41 @@ export class LSPService {
 		const servers = getServersForFileWithConfig(filePath);
 		if (servers.length === 0) return { clients: [], serverCountAttempted: 0 };
 
-		// Count servers with a valid root as "attempted" — extension-only matches
-		// that fail the root check are not real spawn attempts.
-		const roots = await Promise.all(servers.map((s) => s.root(filePath)));
-		const serverCountAttempted = roots.filter(Boolean).length;
-
-		const spawned = await Promise.all(
-			servers.map((server) => this.ensureClientForServer(filePath, server)),
+		const roots = await Promise.all(
+			servers.map((server) => server.root(filePath)),
 		);
-		return {
-			clients: spawned.filter((entry): entry is SpawnedServer =>
-				Boolean(entry),
+		const rootedServers = servers.filter((_server, index) =>
+			Boolean(roots[index]),
+		);
+		const primaryServers = rootedServers.filter((server) => !server.fallbackFor);
+		const fallbackServers = rootedServers.filter((server) => server.fallbackFor);
+
+		let serverCountAttempted = primaryServers.length;
+		const primaryResults = await Promise.all(
+			primaryServers.map((server) =>
+				this.ensureClientForServer(filePath, server),
 			),
-			serverCountAttempted,
-		};
+		);
+		const clients = primaryResults.filter(
+			(entry): entry is SpawnedServer => Boolean(entry),
+		);
+		const satisfiedServerIds = new Set(
+			clients.map((entry) => entry.info.id),
+		);
+
+		for (const fallback of fallbackServers) {
+			const target = fallback.fallbackFor;
+			if (target && satisfiedServerIds.has(target)) continue;
+
+			serverCountAttempted += 1;
+			const spawned = await this.ensureClientForServer(filePath, fallback);
+			if (!spawned) continue;
+
+			clients.push(spawned);
+			if (target) satisfiedServerIds.add(target);
+		}
+
+		return { clients, serverCountAttempted };
 	}
 
 	/**
