@@ -13,6 +13,25 @@ vi.mock("../../clients/lsp/index.js", () => ({
 
 import { createLspDiagnosticsTool } from "../../tools/lsp-diagnostics.js";
 
+async function executeFileDiagnostics() {
+	const tool = createLspDiagnosticsTool();
+	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-lens-lsp-health-"));
+	const filePath = path.join(tmpDir, "example.ts");
+	fs.writeFileSync(filePath, "const value = 1;\n");
+
+	try {
+		return await tool.execute(
+			"diag-file",
+			{ filePath, severity: "all" },
+			new AbortController().signal,
+			null,
+			{ cwd: "." },
+		);
+	} finally {
+		fs.rmSync(tmpDir, { recursive: true, force: true });
+	}
+}
+
 describe("lsp_diagnostics tool", () => {
 	beforeEach(() => {
 		mocked.service = {
@@ -66,6 +85,115 @@ describe("lsp_diagnostics tool", () => {
 		} finally {
 			fs.rmSync(tmpDir, { recursive: true, force: true });
 		}
+	});
+
+	it("reports LSP unavailable when no clients are ready", async () => {
+		(
+			mocked.service as {
+				getDiagnostics: ReturnType<typeof vi.fn>;
+				getDiagnosticsHealth: ReturnType<typeof vi.fn>;
+			}
+		).getDiagnostics.mockResolvedValue([]);
+		(
+			mocked.service as {
+				getDiagnosticsHealth: ReturnType<typeof vi.fn>;
+			}
+		).getDiagnosticsHealth.mockReturnValue({
+			health: "no_clients",
+			failureKind: "no_clients",
+			serverCountAttempted: 1,
+			serverCountReady: 0,
+			candidateServerIds: ["typescript"],
+			mergedCount: 0,
+			dedupDroppedCount: 0,
+			checkedAt: new Date().toISOString(),
+		});
+
+		const result = (await executeFileDiagnostics()) as any;
+		const content = String(result.content[0]?.text);
+
+		expect(content).toContain("LSP unavailable");
+		expect(content).not.toContain("No diagnostics found.");
+		expect(result.details?.lspHealth).toMatchObject({
+			health: "no_clients",
+			serverCountAttempted: 1,
+			serverCountReady: 0,
+		});
+	});
+
+	it("labels last-known diagnostics as stale when no clients are ready", async () => {
+		(
+			mocked.service as {
+				getDiagnostics: ReturnType<typeof vi.fn>;
+				getDiagnosticsHealth: ReturnType<typeof vi.fn>;
+			}
+		).getDiagnostics.mockResolvedValue([
+			{
+				severity: 1,
+				message: "stale type error",
+				range: {
+					start: { line: 0, character: 0 },
+					end: { line: 0, character: 5 },
+				},
+				source: "ts",
+			},
+		]);
+		(
+			mocked.service as {
+				getDiagnosticsHealth: ReturnType<typeof vi.fn>;
+			}
+		).getDiagnosticsHealth.mockReturnValue({
+			health: "no_clients_stale",
+			failureKind: "no_clients_stale",
+			serverCountAttempted: 1,
+			serverCountReady: 0,
+			candidateServerIds: ["typescript"],
+			mergedCount: 1,
+			dedupDroppedCount: 0,
+			checkedAt: new Date().toISOString(),
+		});
+
+		const result = (await executeFileDiagnostics()) as any;
+		const content = String(result.content[0]?.text);
+
+		expect(content).toContain("LSP unavailable");
+		expect(content).toContain("stale last-known diagnostics");
+		expect(content).toContain("stale type error");
+		expect(result.details?.lspHealth.health).toBe("no_clients_stale");
+	});
+
+	it("keeps a healthy empty result distinct from LSP unavailability", async () => {
+		(
+			mocked.service as {
+				getDiagnostics: ReturnType<typeof vi.fn>;
+				getDiagnosticsHealth: ReturnType<typeof vi.fn>;
+			}
+		).getDiagnostics.mockResolvedValue([]);
+		(
+			mocked.service as {
+				getDiagnosticsHealth: ReturnType<typeof vi.fn>;
+			}
+		).getDiagnosticsHealth.mockReturnValue({
+			health: "ok_empty",
+			failureKind: "none",
+			serverCountAttempted: 1,
+			serverCountReady: 1,
+			candidateServerIds: ["typescript"],
+			mergedCount: 0,
+			dedupDroppedCount: 0,
+			checkedAt: new Date().toISOString(),
+		});
+
+		const result = (await executeFileDiagnostics()) as any;
+		const content = String(result.content[0]?.text);
+
+		expect(content).toBe("No diagnostics found.");
+		expect(content).not.toContain("LSP unavailable");
+		expect(result.details?.lspHealth).toMatchObject({
+			health: "ok_empty",
+			serverCountAttempted: 1,
+			serverCountReady: 1,
+		});
 	});
 
 	it("requires either filePath or filePaths", async () => {
