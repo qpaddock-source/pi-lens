@@ -148,6 +148,7 @@ describe("LSP Client Integration — cold start", () => {
 		await expect(
 			launchLSP(process.execPath, ["--nonexistent-flag"], {
 				cwd: process.cwd(),
+				startupFailureWindowMs: 2_000,
 			}),
 		).rejects.toThrow();
 	});

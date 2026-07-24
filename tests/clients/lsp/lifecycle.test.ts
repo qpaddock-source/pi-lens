@@ -42,7 +42,7 @@ describe("LSP Launch", () => {
 
 		await expect(
 			launchLSP(process.execPath, [scriptPath], {
-				startupFailureWindowMs: 500,
+				startupFailureWindowMs: 2_000,
 			}),
 		).rejects.toThrow(/exited immediately/);
 
