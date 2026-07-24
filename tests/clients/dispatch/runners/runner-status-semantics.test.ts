@@ -125,13 +125,13 @@ describe("runner status/semantic edge cases", () => {
 			fs.writeFileSync(cargoToml, "[package]\nname='demo'\nversion='0.1.0'\n");
 			fs.writeFileSync(filePath, "fn main() {}\n");
 
+			safeSpawn.mockReturnValue({
+				error: null,
+				status: 0,
+				stdout: "cargo",
+				stderr: "",
+			});
 			safeSpawnAsync
-				.mockResolvedValueOnce({
-					error: null,
-					status: 0,
-					stdout: "cargo",
-					stderr: "",
-				})
 				.mockResolvedValueOnce({
 					error: null,
 					status: 0,
