@@ -2,9 +2,9 @@
 
 > **REQUIRED SUB-SKILL:** Use the executing-plans skill to implement this plan task-by-task.
 
-**Goal:** Merge upstream pi-lens into the locally pinned branch while preserving all pinned behavior, prefer managed Pyright for Python LSP, retain managed Jedi fallback, report unavailable LSPs accurately, and roll the verified commit into the durable local Pi setup.
+**Goal:** Merge upstream pi-lens into the locally pinned branch while preserving all pinned behavior, prefer managed Pyright for Python LSP, use managed Jedi only as a true fallback, report unavailable LSPs accurately, validate the installed package, and only then update the durable local Pi setup pin.
 
-**Architecture:** Branch `fix/pi-lens/python-lsp-reconciliation` starts at the current pin and merges `master`, preserving both histories. Resolve only the two predicted content conflicts, use upstream Python server ordering and unavailable-diagnostics behavior, and preserve the pinned stale-context, Prettier, and managed-Jedi changes. After verification and publication, update the separate `pi-setup` package pin and use `pi install` to reconcile the active package checkout.
+**Architecture:** Branch `fix/pi-lens/python-lsp-reconciliation` starts at the current pin and merges `master`, preserving both histories. The merge provides upstream Pyright and health behavior; a small `fallbackFor` policy prevents aggregate diagnostics from starting Jedi when Pyright is ready while preserving concurrent complementary servers. Publication and active runtime validation happen before the separate `pi-setup` pin update.
 
 **Tech Stack:** TypeScript ESM, Vitest, Node 26, git worktrees, Pi git packages.
 
@@ -15,18 +15,19 @@
 - Worktree: `/Users/quinnpaddock/worktrees/pi-lens/fix/pi-lens/python-lsp-reconciliation`
 - Branch: `fix/pi-lens/python-lsp-reconciliation`
 - `6e58a25` stabilizes immediate-exit tests under high parallel load; normal `npm test` passes with 963 passed and 5 skipped.
-- `e5a3754` records the user-validated design in `docs/plans/2026-07-24-python-lsp-reconciliation-design.md`.
-- Dry-run merge predicts content conflicts only in `index.ts` and `skills/lsp-navigation/SKILL.md`.
+- `e5a3754` records the user-validated design.
+- `37408be` records the original implementation plan.
+- A dry-run merge predicts content conflicts only in `index.ts` and `skills/lsp-navigation/SKILL.md`; recompute after Task 1 and stop if the conflict set changes unexpectedly.
 
-### Task 1: Add the Python server-priority regression test
+### Task 1: Add pre-merge Python policy regressions
 
 **Files:**
 
 - Modify: `tests/clients/lsp/server-policy.test.ts`
 
-**Step 1: Write the failing test**
+**Step 1: Add the server-order test**
 
-Add this test inside `describe("lsp server policy", ...)`:
+Add inside `describe("lsp server policy", ...)`:
 
 ```ts
 it("prefers pyright before jedi for Python files", async () => {
@@ -42,32 +43,41 @@ it("prefers pyright before jedi for Python files", async () => {
 });
 ```
 
-**Step 2: Run the test and verify RED**
+**Step 2: Assert lazy Pyright initialization**
 
-Run:
+In the existing `launches pyright-langserver from managed pyright install` test, add:
 
-```bash
-npx vitest run tests/clients/lsp/server-policy.test.ts -t "prefers pyright before jedi"
+```ts
+expect(spawned?.initialization).toMatchObject({
+  openFilesOnly: true,
+});
 ```
 
-Expected: FAIL because the pinned registry returns only `python-jedi`.
+**Step 3: Run both tests and verify RED**
 
-**Step 3: Commit the regression test**
+```bash
+npx vitest run tests/clients/lsp/server-policy.test.ts \
+  -t "prefers pyright before jedi|launches pyright-langserver from managed"
+```
+
+Expected: FAIL because the pin registers only Jedi and does not initialize Pyright with `openFilesOnly: true`.
+
+**Step 4: Commit the intentional RED tests**
 
 ```bash
 git add tests/clients/lsp/server-policy.test.ts
-git commit -m "test: require pyright before jedi"
+git commit -m "test: require preferred lazy pyright LSP"
 ```
 
-The failing commit is intentional: the upstream merge is the implementation under test.
+Record the resulting Task 1 commit in the execution notes. The failing commit is intentional: the upstream merge is the implementation under test.
 
-### Task 2: Merge upstream and resolve the two conflicts
+### Task 2: Merge upstream and resolve conflicts
 
 **Files:**
 
 - Merge/modify: `index.ts`
 - Merge/modify: `skills/lsp-navigation/SKILL.md`
-- Auto-merged relevant files: `clients/installer/index.ts`, `clients/lsp/server.ts`, `clients/tool-policy.ts`, `tests/index-integration.test.ts`, `README.md`
+- Auto-merged relevant files: `clients/installer/index.ts`, `clients/lsp/server.ts`, `clients/lsp/index.ts`, `clients/tool-policy.ts`, `tools/lsp-diagnostics.ts`, `tests/index-integration.test.ts`, `README.md`
 
 **Step 1: Merge upstream**
 
@@ -75,11 +85,9 @@ The failing commit is intentional: the upstream merge is the implementation unde
 git merge --no-ff master
 ```
 
-Expected: merge pauses with content conflicts in only `index.ts` and `skills/lsp-navigation/SKILL.md`.
+Expected: merge pauses with content conflicts in `index.ts` and `skills/lsp-navigation/SKILL.md`. If the conflict set differs, stop and inspect every additional path before resolving it.
 
-If the conflict set differs, stop and inspect the new paths before resolving them.
-
-**Step 2: Resolve `index.ts` in favor of safe context snapshots**
+**Step 2: Preserve safe event-context snapshots in `index.ts`**
 
 For `agent_end`, retain:
 
@@ -103,43 +111,45 @@ await handleTurnEnd({
   getFlag,
 ```
 
-This preserves `24dd753` and rejects upstream accesses to stale `ctx`/live flags.
+This preserves `24dd753` and rejects upstream access to stale `ctx` or live flags.
 
 **Step 3: Resolve the navigation skill as a semantic union**
 
-Keep the pinned mandatory trigger wording while incorporating upstream diagnostics guidance:
+Use this frontmatter description:
 
 ```yaml
 description: Use when needing IDE-style code intelligence such as definitions, references, types, call hierarchy, symbols, diagnostics, signature help, implementations, or safe renames. Use as PRIMARY for code intelligence and proactive type/error checks.
 ```
 
-Retain upstream's separate `When to Use Diagnostics` and `When to Use Navigation` tables, explicit batch guidance, tracked-snapshot caveat, and final golden rule. Remove every conflict marker.
+Retain upstream's separate diagnostics and navigation tables, bounded batch guidance, tracked-snapshot caveat, and final golden rule. Remove every conflict marker.
 
-**Step 4: Check the merged Python policy before staging**
+**Step 4: Inspect the auto-merged Python behavior**
 
-Confirm in `clients/lsp/server.ts`:
+Confirm `clients/lsp/server.ts` contains, in this order:
 
 ```ts
 PythonServer,
 PythonJediServer,
 ```
 
-Confirm `PythonServer` includes `pyright-langserver` and `basedpyright-langserver` candidates and initializes with `openFilesOnly: true`. Confirm `PythonJediServer` still uses managed tool ID `jedi-language-server`.
+Confirm Pyright/BasedPyright candidates and `openFilesOnly: true` are present. Confirm Jedi still uses managed tool ID `jedi-language-server`.
 
-**Step 5: Stage resolutions and verify the index**
+**Step 5: Stage and validate the merge resolution**
 
 ```bash
 git add index.ts skills/lsp-navigation/SKILL.md
 git diff --check
-git diff --name-only --diff-filter=U
+git diff --cached --check
+test -z "$(git diff --name-only --diff-filter=U)"
 ```
 
 Expected: no whitespace errors and no unmerged paths.
 
-**Step 6: Run the regression test and verify GREEN**
+**Step 6: Run the Task 1 tests and verify GREEN**
 
 ```bash
-npx vitest run tests/clients/lsp/server-policy.test.ts -t "prefers pyright before jedi"
+npx vitest run tests/clients/lsp/server-policy.test.ts \
+  -t "prefers pyright before jedi|launches pyright-langserver from managed"
 ```
 
 Expected: PASS.
@@ -150,30 +160,344 @@ Expected: PASS.
 git commit
 ```
 
-Retain the generated merge subject and document the conflict policy in the body.
+Retain the generated merge subject and describe the safe-context conflict resolution in the body.
 
-### Task 3: Verify behavior and ancestry
+### Task 3: Implement true service-level fallback with TDD
+
+**Files:**
+
+- Modify: `clients/lsp/server.ts`
+- Modify: `clients/lsp/index.ts`
+- Create: `tests/clients/lsp/service-fallback.test.ts`
+
+**Step 1: Write the service-level test fixture**
+
+Create `tests/clients/lsp/service-fallback.test.ts` using the existing service test mock pattern:
+
+```ts
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const getServersForFileWithConfig = vi.fn();
+const createLSPClient = vi.fn();
+
+vi.mock("../../../clients/lsp/config.js", () => ({
+  getServersForFileWithConfig,
+}));
+vi.mock("../../../clients/lsp/client.js", () => ({
+  createLSPClient,
+}));
+
+const FILE = "/repo/example.py";
+
+function fakeClient() {
+  return {
+    isAlive: () => true,
+    shutdown: vi.fn(async () => {}),
+    getWorkspaceDiagnosticsSupport: () => ({
+      advertised: false,
+      mode: "push-only" as const,
+      diagnosticProviderKind: "none" as const,
+    }),
+    getOperationSupport: () => ({}),
+  };
+}
+
+function server(
+  id: string,
+  options: { fallbackFor?: string; available?: boolean } = {},
+) {
+  return {
+    id,
+    name: id,
+    extensions: [".py"],
+    fallbackFor: options.fallbackFor,
+    root: vi.fn(async () => "/repo"),
+    spawn: vi.fn(async () =>
+      options.available === false
+        ? undefined
+        : {
+            process: {
+              process: { killed: false },
+              stdin: {},
+              stdout: {},
+              stderr: {},
+              pid: 1234,
+            },
+          },
+    ),
+  };
+}
+
+beforeEach(() => {
+  getServersForFileWithConfig.mockReset();
+  createLSPClient.mockReset();
+  createLSPClient.mockImplementation(async () => fakeClient());
+});
+```
+
+Adjust only the fake process shape if the merged `createLSPClient` contract requires it; do not weaken behavioral assertions.
+
+**Step 2: Add the primary-success test**
+
+```ts
+it("skips a declared fallback when its primary server is ready", async () => {
+  const { LSPService } = await import("../../../clients/lsp/index.js");
+  const primary = server("python");
+  const jedi = server("python-jedi", { fallbackFor: "python" });
+  getServersForFileWithConfig.mockReturnValue([primary, jedi]);
+
+  const result = await new LSPService().getClientsForFile(FILE);
+
+  expect(primary.spawn).toHaveBeenCalledTimes(1);
+  expect(jedi.spawn).not.toHaveBeenCalled();
+  expect(result.clients.map((entry) => entry.info.id)).toEqual(["python"]);
+  expect(result.serverCountAttempted).toBe(1);
+});
+```
+
+**Step 3: Add the primary-failure test**
+
+```ts
+it("starts a declared fallback when its primary server is unavailable", async () => {
+  const { LSPService } = await import("../../../clients/lsp/index.js");
+  const primary = server("python", { available: false });
+  const jedi = server("python-jedi", { fallbackFor: "python" });
+  getServersForFileWithConfig.mockReturnValue([primary, jedi]);
+
+  const result = await new LSPService().getClientsForFile(FILE);
+
+  expect(primary.spawn).toHaveBeenCalledTimes(1);
+  expect(jedi.spawn).toHaveBeenCalledTimes(1);
+  expect(result.clients.map((entry) => entry.info.id)).toEqual([
+    "python-jedi",
+  ]);
+  expect(result.serverCountAttempted).toBe(2);
+});
+```
+
+**Step 4: Add the complementary-server test**
+
+```ts
+it("keeps complementary servers while skipping a satisfied fallback", async () => {
+  const { LSPService } = await import("../../../clients/lsp/index.js");
+  const primary = server("python");
+  const complementary = server("python-analysis");
+  const jedi = server("python-jedi", { fallbackFor: "python" });
+  getServersForFileWithConfig.mockReturnValue([
+    primary,
+    complementary,
+    jedi,
+  ]);
+
+  const result = await new LSPService().getClientsForFile(FILE);
+
+  expect(complementary.spawn).toHaveBeenCalledTimes(1);
+  expect(jedi.spawn).not.toHaveBeenCalled();
+  expect(result.clients.map((entry) => entry.info.id).sort()).toEqual([
+    "python",
+    "python-analysis",
+  ]);
+  expect(result.serverCountAttempted).toBe(2);
+});
+```
+
+**Step 5: Run the new tests and verify RED**
+
+```bash
+npx vitest run tests/clients/lsp/service-fallback.test.ts
+```
+
+Expected: FAIL because aggregate selection currently attempts every matching server.
+
+**Step 6: Add fallback metadata**
+
+Add to `LSPServerInfo` in `clients/lsp/server.ts`:
+
+```ts
+/** Server ID that must be unavailable before this fallback is attempted. */
+fallbackFor?: string;
+```
+
+Add to `PythonJediServer`:
+
+```ts
+fallbackFor: "python",
+```
+
+**Step 7: Replace aggregate selection with primary-then-fallback selection**
+
+Replace the body of `getClientsForFile()` after the empty-server check with logic equivalent to:
+
+```ts
+const roots = await Promise.all(servers.map((server) => server.root(filePath)));
+const rootedServers = servers.filter((_server, index) => Boolean(roots[index]));
+const primaryServers = rootedServers.filter((server) => !server.fallbackFor);
+const fallbackServers = rootedServers.filter((server) => server.fallbackFor);
+
+let serverCountAttempted = primaryServers.length;
+const primaryResults = await Promise.all(
+  primaryServers.map((server) => this.ensureClientForServer(filePath, server)),
+);
+const clients = primaryResults.filter(
+  (entry): entry is SpawnedServer => Boolean(entry),
+);
+const satisfiedServerIds = new Set(clients.map((entry) => entry.info.id));
+
+for (const fallback of fallbackServers) {
+  const target = fallback.fallbackFor;
+  if (target && satisfiedServerIds.has(target)) continue;
+
+  serverCountAttempted += 1;
+  const spawned = await this.ensureClientForServer(filePath, fallback);
+  if (!spawned) continue;
+
+  clients.push(spawned);
+  if (target) satisfiedServerIds.add(target);
+}
+
+return { clients, serverCountAttempted };
+```
+
+This must not serialize or suppress independent primary/complementary servers.
+
+**Step 8: Run the tests and verify GREEN**
+
+```bash
+npx vitest run \
+  tests/clients/lsp/service-fallback.test.ts \
+  tests/clients/lsp/service-mode-grace.test.ts \
+  tests/clients/lsp/service-early-unblock.test.ts \
+  tests/clients/lsp/service-touch-collect.test.ts \
+  tests/clients/lsp/server-policy.test.ts
+```
+
+Expected: PASS.
+
+**Step 9: Commit**
+
+```bash
+git add clients/lsp/server.ts clients/lsp/index.ts \
+  tests/clients/lsp/service-fallback.test.ts
+git commit -m "fix: make Jedi an exclusive Python LSP fallback"
+```
+
+### Task 4: Add unavailable-LSP regression coverage
+
+**Files:**
+
+- Modify: `tests/tools/lsp-diagnostics.test.ts`
+
+**Step 1: Add a small file-execution helper**
+
+Inside the test file, add a helper that creates a temporary `.ts` file, executes `createLspDiagnosticsTool()` in file mode, returns the result, and removes the directory in `finally`. Keep the existing hoisted service mock.
+
+**Step 2: Test zero ready clients**
+
+Configure:
+
+```ts
+mocked.service.getDiagnostics.mockResolvedValue([]);
+mocked.service.getDiagnosticsHealth.mockReturnValue({
+  health: "no_clients",
+  failureKind: "no_clients",
+  serverCountAttempted: 1,
+  serverCountReady: 0,
+  candidateServerIds: ["typescript"],
+  mergedCount: 0,
+  dedupDroppedCount: 0,
+  checkedAt: new Date().toISOString(),
+});
+```
+
+Assert the content contains `LSP unavailable`, does not contain `No diagnostics found.`, and:
+
+```ts
+expect(result.details?.lspHealth).toMatchObject({
+  health: "no_clients",
+  serverCountAttempted: 1,
+  serverCountReady: 0,
+});
+```
+
+**Step 3: Test stale diagnostics**
+
+Return one diagnostic and health:
+
+```ts
+{
+  health: "no_clients_stale",
+  failureKind: "no_clients_stale",
+  serverCountAttempted: 1,
+  serverCountReady: 0,
+  candidateServerIds: ["typescript"],
+  mergedCount: 1,
+  dedupDroppedCount: 0,
+  checkedAt: new Date().toISOString(),
+}
+```
+
+Assert content contains `LSP unavailable`, `stale last-known diagnostics`, and the diagnostic message; assert `details.lspHealth.health === "no_clients_stale"`.
+
+**Step 4: Test a healthy empty result**
+
+Return `[]` and health with `health: "ok_empty"`, `serverCountAttempted: 1`, and `serverCountReady: 1`. Assert the content is `No diagnostics found.`, contains no unavailable warning, and exposes the healthy structured details.
+
+**Step 5: Run the tests**
+
+```bash
+npx vitest run tests/tools/lsp-diagnostics.test.ts
+```
+
+Expected: PASS against the merged upstream behavior. If any assertion fails, use systematic debugging before modifying production behavior.
+
+**Step 6: Commit**
+
+```bash
+git add tests/tools/lsp-diagnostics.test.ts
+git commit -m "test: cover unavailable LSP diagnostic health"
+```
+
+### Task 5: Verify behavior, history, and the real managed server
 
 **Files:**
 
 - No edits expected unless verification exposes a defect.
 
-**Step 1: Verify history preservation**
+**Step 1: Verify ancestry fail-fast**
+
+Run in one shell invocation:
 
 ```bash
-for commit in 24dd753 9cd63a4 3a11ab2 3024432 1ef3dda master; do
-  git merge-base --is-ancestor "$commit" HEAD
-  echo "$commit preserved"
+set -euo pipefail
+task1_sha=$(git log -1 --format=%H --grep='^test: require preferred lazy pyright LSP$')
+test -n "$task1_sha"
+for commit in \
+  24dd753 \
+  9cd63a4 \
+  3a11ab2 \
+  6e58a25 \
+  e5a3754 \
+  37408be \
+  "$task1_sha" \
+  3024432 \
+  1ef3dda \
+  master
+do
+  git merge-base --is-ancestor "$commit" HEAD && printf '%s preserved\n' "$commit"
 done
 ```
 
-Expected: every check exits zero.
+Expected: any failed ancestor check terminates the command nonzero.
 
 **Step 2: Run focused tests**
 
 ```bash
 npx vitest run \
   tests/clients/lsp/server-policy.test.ts \
+  tests/clients/lsp/service-fallback.test.ts \
+  tests/clients/lsp/service-mode-grace.test.ts \
+  tests/clients/lsp/service-early-unblock.test.ts \
+  tests/clients/lsp/service-touch-collect.test.ts \
   tests/clients/lsp/integration.test.ts \
   tests/clients/lsp/lifecycle.test.ts \
   tests/clients/installer/managed-tool-ids.test.ts \
@@ -184,17 +508,21 @@ npx vitest run \
   tests/index-integration.test.ts
 ```
 
-Expected: PASS, including upstream unavailable-LSP tests and pinned formatter/tool-policy tests.
+Expected: PASS.
 
 **Step 3: Run proactive diagnostics**
 
 Run `lsp_diagnostics` with severity `all` on:
 
 - `clients/lsp/server.ts`
+- `clients/lsp/index.ts`
 - `clients/installer/index.ts`
 - `clients/tool-policy.ts`
+- `tools/lsp-diagnostics.ts`
 - `index.ts`
 - `tests/clients/lsp/server-policy.test.ts`
+- `tests/clients/lsp/service-fallback.test.ts`
+- `tests/tools/lsp-diagnostics.test.ts`
 - `tests/index-integration.test.ts`
 
 Expected: no errors.
@@ -206,45 +534,125 @@ npm run lint
 npm run build
 npm test
 git diff --check
+git diff --cached --check
 git status --short --branch
 ```
 
-Expected: lint, build, and all tests pass; working tree is clean. If any test fails, use systematic debugging and do not bundle speculative corrections.
+Expected: lint, build, and all tests pass; the working tree is clean.
 
-**Step 5: Exercise the managed Pyright server directly**
+**Step 5: Exercise the real selection path through `LSPService`**
 
-After the build, run a small Node script that imports `PythonServer`, calls `spawn()` with installation allowed, creates an LSP client for a temporary Python file, opens it, and performs a hover or diagnostics request. Always shut down the client/process in `finally`.
+After `npm run build`, run from the pi-lens worktree:
 
-Expected: the launched process path resolves to the existing managed `~/.pi-lens/tools/node_modules/.bin/pyright-langserver`, and the request succeeds without attempting Jedi installation.
+```bash
+node --input-type=module <<'NODE'
+import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { LSPService } from "./clients/lsp/index.js";
 
-### Task 4: Publish the verified pi-lens branch
+const root = await mkdtemp(path.join(os.tmpdir(), "pi-lens-python-smoke-"));
+const file = path.join(root, "smoke.py");
+const content = 'value: int = "not-an-int"\n';
+const service = new LSPService();
+
+try {
+  await writeFile(file, content, "utf8");
+  const selection = await service.getClientsForFile(file);
+  assert.deepEqual(
+    selection.clients.map((entry) => entry.info.id),
+    ["python"],
+  );
+  assert.equal(selection.serverCountAttempted, 1);
+
+  await service.openFile(file, content);
+  await service.getDiagnostics(file, "document");
+  const health = service.getDiagnosticsHealth(file);
+  assert.ok(health);
+  assert.equal(health.serverCountReady, 1);
+  assert.equal(health.serverCountAttempted, 1);
+  assert.ok(health.candidateServerIds.includes("python"));
+  assert.ok(health.candidateServerIds.includes("python-jedi"));
+  console.log(JSON.stringify({ selected: ["python"], health }, null, 2));
+} finally {
+  await service.shutdown();
+  await rm(root, { recursive: true, force: true });
+}
+NODE
+```
+
+Expected: selected client is `python`, attempted count is one, health is ready, cleanup always runs, and no Jedi installation is attempted. The automated fallback test remains the authoritative assertion that `PythonJediServer.spawn()` was not called.
+
+### Task 6: Publish the verified pi-lens branch
 
 **Files:**
 
 - No edits expected.
 
-**Step 1: Record the reconciled commit**
+**Step 1: Request the branch-integration choice**
+
+Use the finishing-a-development-branch skill. Publication is required before a clean machine can resolve the commit pin. Do not push until the user selects the push/PR option.
+
+**Step 2: Publish and verify in one shell invocation**
+
+For an approved push:
 
 ```bash
-PI_LENS_SHA=$(git rev-parse HEAD)
-printf '%s\n' "$PI_LENS_SHA"
+set -euo pipefail
+branch=fix/pi-lens/python-lsp-reconciliation
+sha=$(git rev-parse HEAD)
+git push -u origin "$branch"
+git fetch origin "$branch"
+git merge-base --is-ancestor "$sha" "origin/$branch"
+printf 'published pi-lens SHA: %s\n' "$sha"
 ```
 
-**Step 2: Request the branch-integration choice**
+Record the literal printed SHA in the execution summary; do not rely on a shell variable in later tool calls.
 
-Use the finishing-a-development-branch skill. Publication is required before a clean machine can resolve a commit pin. Do not push until the user selects the push/PR option.
+### Task 7: Reconcile and validate the active Pi installation
 
-**Step 3: Publish the selected branch**
+**Files:**
 
-For the approved push option:
+- Modify through Pi CLI: `~/.pi/agent/settings.json`
+- Reconciled checkout: `~/.pi/agent/git/github.com/qpaddock-source/pi-lens`
+
+**Step 1: Install the published commit with a same-shell SHA lookup**
 
 ```bash
-git push -u origin fix/pi-lens/python-lsp-reconciliation
+set -euo pipefail
+worktree=/Users/quinnpaddock/worktrees/pi-lens/fix/pi-lens/python-lsp-reconciliation
+sha=$(git -C "$worktree" rev-parse HEAD)
+pi install "git:github.com/qpaddock-source/pi-lens@$sha"
+printf 'installed pi-lens SHA: %s\n' "$sha"
 ```
 
-Confirm the recorded SHA is reachable from `origin/fix/pi-lens/python-lsp-reconciliation`.
+Expected: active settings contain the printed literal SHA, checkout reconciliation succeeds, and dependencies install.
 
-### Task 5: Update the durable pi-setup pin with TDD
+**Step 2: Reload Pi**
+
+Run `/reload` in the active Pi session or restart Pi.
+
+**Step 3: Verify a real Python file**
+
+Run `lsp_diagnostics` and one navigation operation against a known Python file. Check fresh `~/.pi-lens/sessionstart.log` entries and assert:
+
+- `python`/Pyright spawns successfully;
+- no `python-jedi` spawn or install attempt occurs for the same file/root;
+- diagnostics health reports at least one ready client;
+- the footer reports at least one active LSP client.
+
+**Step 4: Roll back and stop on failure**
+
+Use the literal old pin, not a cross-command variable:
+
+```bash
+pi install "git:github.com/qpaddock-source/pi-lens@3a11ab24118396b3820f5e8ab143ac9dfae7aa0d"
+```
+
+Reload Pi, report the evidence, and do not begin Task 8. Do not install Jedi with unsafe pip flags.
+
+### Task 8: Update the durable pi-setup pin only after runtime success
 
 **Files (separate repository/worktree):**
 
@@ -254,13 +662,28 @@ Confirm the recorded SHA is reachable from `origin/fix/pi-lens/python-lsp-reconc
 
 **Step 1: Create an isolated pi-setup worktree**
 
-Create branch `fix/pi-setup/python-lsp-pin` from `origin/main`. Do not carry the unrelated date-only change currently present in the main checkout's `extensions/llm-wiki/README.md`.
+Create branch `fix/pi-setup/python-lsp-pin` from `origin/main`. Do not carry the unrelated date-only modification currently present in the main checkout's `extensions/llm-wiki/README.md`.
 
-**Step 2: Update the bootstrap expectation first**
+**Step 2: Record the literal verified SHA**
 
-Replace the old pi-lens SHA in `test/bootstrap.test.ts` with `PI_LENS_SHA`.
+In one shell invocation:
 
-**Step 3: Run the bootstrap test and verify RED**
+```bash
+set -euo pipefail
+worktree=/Users/quinnpaddock/worktrees/pi-lens/fix/pi-lens/python-lsp-reconciliation
+sha=$(git -C "$worktree" rev-parse HEAD)
+git -C "$worktree" merge-base --is-ancestor "$sha" \
+  origin/fix/pi-lens/python-lsp-reconciliation
+printf '%s\n' "$sha"
+```
+
+Use the printed literal SHA in all three files below; do not refer to `PI_LENS_SHA` in later shell calls.
+
+**Step 3: Update the bootstrap expectation first**
+
+Replace the old pi-lens SHA in `test/bootstrap.test.ts` with the printed verified SHA.
+
+**Step 4: Run the bootstrap test and verify RED**
 
 ```bash
 node --test test/bootstrap.test.ts
@@ -268,16 +691,16 @@ node --test test/bootstrap.test.ts
 
 Expected: FAIL because `config/settings.json` still contains `3a11ab24118396b3820f5e8ab143ac9dfae7aa0d`.
 
-**Step 4: Update durable configuration and documentation**
+**Step 5: Update durable configuration and documentation**
 
-Replace the old SHA with `PI_LENS_SHA` in:
+Replace the old SHA with the same literal verified SHA in:
 
 - `config/settings.json`
 - both package examples in `README.md`
 
 Keep the explanation that pi-lens is pinned for local policy.
 
-**Step 5: Run tests and verify GREEN**
+**Step 6: Run tests and verify GREEN**
 
 ```bash
 node --test test/bootstrap.test.ts
@@ -286,48 +709,12 @@ npm test
 
 Expected: PASS.
 
-**Step 6: Commit explicit paths**
+**Step 7: Commit explicit paths**
 
 ```bash
 git add test/bootstrap.test.ts config/settings.json README.md
+git diff --cached --check
 git commit -m "fix: pin reconciled Python LSP package"
 ```
 
-Use the finishing-a-development-branch skill before pushing or integrating this second branch.
-
-### Task 6: Reconcile the active Pi installation and verify runtime
-
-**Files:**
-
-- Modify through Pi CLI: `~/.pi/agent/settings.json`
-- Reconciled package checkout: `~/.pi/agent/git/github.com/qpaddock-source/pi-lens`
-
-**Step 1: Save the rollback ref**
-
-```bash
-OLD_PI_LENS_SHA=3a11ab24118396b3820f5e8ab143ac9dfae7aa0d
-```
-
-**Step 2: Install the published commit**
-
-```bash
-pi install "git:github.com/qpaddock-source/pi-lens@$PI_LENS_SHA"
-```
-
-Expected: settings update to the new pin, package checkout reconciliation, and successful dependency installation.
-
-**Step 3: Reload Pi**
-
-Run `/reload` in the active Pi session or restart Pi.
-
-**Step 4: Verify a real Python file**
-
-Run `lsp_diagnostics` and one navigation operation against a known Python file. Check `~/.pi-lens/sessionstart.log` for a successful `python`/Pyright spawn and confirm the footer reports at least one active LSP client. Confirm no `python-jedi` install attempt occurs while managed Pyright is available.
-
-**Step 5: Roll back on failure**
-
-```bash
-pi install "git:github.com/qpaddock-source/pi-lens@$OLD_PI_LENS_SHA"
-```
-
-Reload Pi, then report the failed verification evidence. Do not install Jedi with unsafe pip flags.
+Use the finishing-a-development-branch skill before pushing or integrating this second branch. If a later check invalidates the pi-lens commit, abandon or revert this pin commit rather than leaving a known-failed durable configuration.
