@@ -1182,6 +1182,159 @@ export class TreeSitterClient {
 				}
 				return true;
 			}
+			case "case_range_single_value": {
+				const start = captures.START?.text ?? "";
+				const end = captures.END?.text ?? "";
+				return start === end;
+			}
+			case "goto_jumps_backward": {
+				const label = captures.LABEL;
+				const gotoNode = captures.GOTO;
+				if (!label || !gotoNode) return false;
+				return label.startIndex < gotoNode.startIndex;
+			}
+			case "goto_targets_inner_block": {
+				const target = captures.TARGET;
+				if (!target) return false;
+				// A goto targets an inner block if its label is inside a
+				// compound_statement that is nested inside another compound_statement.
+				let depth = 0;
+				let node: TreeSitterNode | null | undefined = target.parent;
+				while (node) {
+					if (node.type === "compound_statement") depth++;
+					node = node.parent;
+				}
+				return depth >= 2;
+			}
+			case "c_memset_sensitive_arg": {
+				const callNode = captures.CALL;
+				if (!callNode || callNode.type !== "call_expression") return false;
+				// Find the first argument in the argument_list
+				const argList = callNode.children?.find(
+					(c: any) => c.type === "argument_list",
+				);
+				if (!argList) return false;
+				// First named child after the opening paren is the first arg
+				const firstArg = argList.children?.find((c: any) => c.isNamed);
+				if (!firstArg) return false;
+				const argName = firstArg.text ?? "";
+				return /password|secret|key|token|credential|auth|private|passwd|pin|salt|nonce|iv|seed/i.test(
+					argName,
+				);
+			}
+			case "c_stdlib_name": {
+				const name = captures.NAME?.text ?? "";
+				const STDLIB_NAMES = new Set([
+					"malloc",
+					"calloc",
+					"realloc",
+					"free",
+					"alloca",
+					"printf",
+					"fprintf",
+					"sprintf",
+					"snprintf",
+					"vprintf",
+					"vfprintf",
+					"vsprintf",
+					"vsnprintf",
+					"scanf",
+					"fscanf",
+					"sscanf",
+					"vscanf",
+					"vfscanf",
+					"vsscanf",
+					"strcpy",
+					"strncpy",
+					"strcat",
+					"strncat",
+					"strcmp",
+					"strncmp",
+					"strlen",
+					"strchr",
+					"strrchr",
+					"strstr",
+					"strerror",
+					"memcpy",
+					"memmove",
+					"memset",
+					"memcmp",
+					"memchr",
+					"fopen",
+					"fclose",
+					"fread",
+					"fwrite",
+					"fgets",
+					"fputs",
+					"getc",
+					"putc",
+					"getchar",
+					"putchar",
+					"exit",
+					"abort",
+					"assert",
+					"errno",
+					"abs",
+					"labs",
+					"llabs",
+					"div",
+					"ldiv",
+					"lldiv",
+					"atoi",
+					"atol",
+					"atoll",
+					"strtol",
+					"strtoll",
+					"strtoul",
+					"strtoull",
+					"strtod",
+					"strtof",
+					"strtold",
+					"qsort",
+					"bsearch",
+					"time",
+					"clock",
+					"difftime",
+					"mktime",
+					"strftime",
+					"getenv",
+					"setenv",
+					"putenv",
+					"system",
+					"isalpha",
+					"isdigit",
+					"isalnum",
+					"isspace",
+					"isupper",
+					"islower",
+					"toupper",
+					"tolower",
+					"sizeof",
+					"offsetof",
+					"NULL",
+					"EXIT_SUCCESS",
+					"EXIT_FAILURE",
+				]);
+				return STDLIB_NAMES.has(name);
+			}
+			case "c_octal_literal": {
+				const num = captures.NUM?.text ?? "";
+				return /^0[0-7]+$/.test(num);
+			}
+			case "c_noreturn_attr": {
+				const attr = captures.ATTR?.text ?? "";
+				return attr === "noreturn";
+			}
+			case "c_label_in_switch": {
+				const stmt = captures.STMT;
+				if (!stmt) return false;
+				let node: TreeSitterNode | null | undefined = stmt.parent;
+				while (node) {
+					if (node.type === "switch_statement") return true;
+					node = node.parent;
+				}
+				return false;
+			}
 			default:
 				return true;
 		}

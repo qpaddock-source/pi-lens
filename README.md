@@ -13,7 +13,7 @@ pi-lens focuses on real-time inline code feedback for AI agents.
 On every `write` and `edit`, pi-lens runs a fast, language-aware pipeline (checks depend on file language, project config, and installed tools):
 
 1. **Secrets scan** — blocking; aborts the write if credentials are detected
-2. **Auto-format** — deferred to `agent_end` by default; queued files are formatted once after all agent tool calls complete. Use `--immediate-format` for per-edit formatting
+2. **Auto-format** — deferred to `agent_end` by default; queued files are formatted once after all agent tool calls complete. Use `--immediate-format` or global config `format.mode: "immediate"` for per-edit formatting
 3. **Auto-fix** — safe autofixes from 6 tools (Biome `check --write`, Ruff `check --fix`, ESLint `--fix`, stylelint `--fix`, sqlfluff `fix`, RuboCop `-a`) applied before analysis
 4. **LSP file sync** — opens/updates the file in active language servers
 5. **Dispatch lint** — parallel runner groups: LSP diagnostics, tree-sitter structural rules, ast-grep security/correctness rules, fact rules, language-specific linters, experimental Semgrep security scans, similarity detection
@@ -83,13 +83,15 @@ pi-lens includes **37 language server definitions**. LSP is **enabled by default
 { "warmFiles": ["src/main.cpp", "src/lib.cpp"] }
 ```
 
-LSP servers for: TypeScript, Deno, Python (pyright + pylsp), Go, Rust, Ruby (ruby-lsp + solargraph), PHP, C# (omnisharp), F#, Java, Kotlin, Swift, Dart, Lua, C/C++, Zig, Haskell, Elixir, Gleam, OCaml, Clojure, Terraform, Nix, Bash, Docker, YAML, JSON, HTML, TOML, Prisma, Vue, Svelte, ESLint, CSS.
+**Agent LSP tools:** `lsp_diagnostics` can check one file, a directory, or an explicit `filePaths` batch with bounded concurrency. `lsp_navigation` provides definitions, references, hover, workspace symbols, call hierarchy, rename edits, and `findSymbol` for filtered document-symbol lookup.
+
+LSP servers for: TypeScript, Deno, Python (pyright/basedpyright + jedi), Go, Rust, Ruby (ruby-lsp + solargraph), PHP, C# (omnisharp), F#, Java, Kotlin, Swift, Dart, Lua, C/C++, Zig, Haskell, Elixir, Gleam, OCaml, Clojure, Terraform, Nix, Bash, Docker, YAML, JSON, HTML, TOML, Prisma, Vue, Svelte, ESLint, CSS.
 
 ### Formatters
 
-pi-lens auto-detects and runs **26 formatters** based on project config:
+pi-lens auto-detects and runs **32 formatters** based on project config:
 
-biome, prettier, ruff, black, sqlfluff, gofmt, rustfmt, zig fmt, dart format, shfmt, nixfmt, mix format, ocamlformat, clang-format, ktlint, rubocop, standardrb, gleam format, terraform fmt, php-cs-fixer, csharpier, fantomas, swiftformat, stylua, ormolu, taplo
+biome, prettier, oxfmt, ruff, black, sqlfluff, gofmt, rustfmt, zig fmt, dart format, shfmt, nixfmt, mix format, ocamlformat, clang-format, ktlint, rubocop, standardrb, gleam format, terraform fmt, php-cs-fixer, csharpier, fantomas, swiftformat, stylua, ormolu, taplo, fish_indent, google-java-format, cljfmt, cmake-format, psscriptanalyzer-format
 
 Detection rules:
 
@@ -110,7 +112,7 @@ pi-lens enforces a **read-before-edit** policy on all file writes and edits. Bef
 - **File-modified block** — blocks if the file changed on disk since the last read (auto-format, external tool, or a previous edit that was then reformatted)
 - **Out-of-range block** — blocks if the edit target lines fall outside the ranges previously read, ensuring the agent cannot modify code it hasn't seen
 
-Coverage is tracked across multiple reads: two reads of lines 1–100 and 101–200 together satisfy a full-file write. Symbol-expanded reads (small reads silently widened to the enclosing symbol via tree-sitter) count toward coverage at the symbol level. Markdown, text, and log files are exempt.
+Coverage is tracked across multiple reads: two reads of lines 1–100 and 101–200 together satisfy a full-file write. Symbol-expanded reads (small reads silently widened to the enclosing symbol via tree-sitter) count toward coverage at the symbol level. Markdown files generate a warning instead of blocking (edits outside the section-expanded read range are warned, not silently passed). Plain-text (`.txt`) and log (`.log`) files remain fully exempt.
 
 Override for a single edit: `/lens-allow-edit <path>`
 
@@ -275,6 +277,26 @@ pi --lens-semgrep         # Enable Semgrep dispatch when a local/configured Semg
 pi --lens-semgrep-config p/ci  # Explicit Semgrep config for dispatch (requires --lens-semgrep)
 ```
 
+## Global Config
+
+pi-lens reads optional user preferences from `~/.pi-lens/config.json` (`%USERPROFILE%\\.pi-lens\\config.json` on Windows). Unknown keys are ignored, and missing or invalid config falls back to defaults.
+
+Hide the diagnostics widget by default and run formatting immediately after write/edit tool calls instead of at `agent_end`:
+
+```json
+{
+  "widget": {
+    "visible": false
+  },
+  "format": {
+    "enabled": true,
+    "mode": "immediate"
+  }
+}
+```
+
+`format.mode` can be `"deferred"` (default) or `"immediate"`. Set `format.enabled` to `false` to match `--no-autoformat`. `/lens-widget-toggle` still works as a session-only override.
+
 ## Environment Variables
 
 - `PILENS_DATA_DIR` — redirect per-project state (scanner caches,
@@ -293,51 +315,55 @@ pi --lens-semgrep-config p/ci  # Explicit Semgrep config for dispatch (requires 
 - `/lens-widget-toggle` — show/hide the pi-lens diagnostics widget below the editor
 - `/lens-booboo` — full quality report for current project state
 - `/lens-health` — runtime health, latency, and diagnostic telemetry
+- `/lens-allow-edit <path>` — override the read-before-edit guard for a single edit
 - `/lens-tools` — tool installation status: globally installed, auto-installed, or npx fallback
 - `/lens-tdi` — Technical Debt Index (TDI) and project health trend
 - `/lens-semgrep` — manage experimental Semgrep dispatch (`status`, `init`, `enable`, `disable`, `clear`)
 
 ## Language Coverage
 
-pi-lens supports **35+ languages** through dispatch runners and LSP integration.
+pi-lens supports **36+ languages** through dispatch runners and LSP integration.
 
 Formatting uses a single selected formatter per file: explicit project config wins, otherwise pi-lens uses a smart default where supported, and config-first ecosystems do not autoformat without config.
 
 Dispatch is diagnostics-oriented: automatic formatting and safe autofix happen in the post-write pipeline rather than through dispatch format-check runners.
 
-| Language              | LSP | Dispatch Runners                                                                                               | Formatter           |
-| --------------------- | --- | -------------------------------------------------------------------------------------------------------------- | ------------------- |
-| JavaScript/TypeScript | ✓   | lsp, ts-lsp, biome-check-json, tree-sitter, ast-grep-napi, type-safety, similarity, fact-rules, eslint, oxlint | biome, prettier     |
-| Python                | ✓   | lsp, pyright, ruff-lint, tree-sitter, python-slop                                                              | ruff, black         |
-| Go                    | ✓   | lsp, go-vet, golangci-lint, tree-sitter                                                                        | gofmt               |
-| Rust                  | ✓   | lsp, rust-clippy, tree-sitter                                                                                  | rustfmt             |
-| Ruby                  | ✓   | lsp, rubocop, tree-sitter                                                                                      | rubocop, standardrb |
-| C/C++                 | ✓   | lsp, cpp-check                                                                                                 | clang-format        |
-| Shell                 | ✓   | lsp, shellcheck                                                                                                | shfmt               |
-| CSS/SCSS/Less         | ✓   | lsp, stylelint                                                                                                 | biome, prettier     |
-| HTML                  | ✓   | lsp, htmlhint                                                                                                  | prettier            |
-| YAML                  | ✓   | lsp, yamllint                                                                                                  | prettier            |
-| JSON                  | ✓   | lsp                                                                                                            | biome, prettier     |
-| SQL                   | —   | sqlfluff                                                                                                       | sqlfluff            |
-| Markdown              | —   | spellcheck, markdownlint                                                                                       | prettier            |
-| Docker                | ✓   | lsp, hadolint                                                                                                  | —                   |
-| PHP                   | ✓   | lsp, php-lint, phpstan                                                                                         | php-cs-fixer        |
-| PowerShell            | ✓   | lsp, psscriptanalyzer                                                                                          | —                   |
-| Prisma                | ✓   | lsp, prisma-validate                                                                                           | —                   |
-| C#                    | ✓   | lsp, dotnet-build                                                                                              | csharpier           |
-| F#                    | ✓   | lsp                                                                                                            | fantomas            |
-| Java                  | ✓   | lsp, javac                                                                                                     | —                   |
-| Kotlin                | ✓   | lsp, ktlint                                                                                                    | ktlint              |
-| Swift                 | ✓   | lsp                                                                                                            | swiftformat         |
-| Dart                  | ✓   | lsp, dart-analyze                                                                                              | dart format         |
-| Lua                   | ✓   | lsp                                                                                                            | stylua              |
-| Zig                   | ✓   | lsp, zig-check                                                                                                 | zig fmt             |
-| Haskell               | ✓   | lsp                                                                                                            | ormolu              |
-| Elixir                | ✓   | lsp, elixir-check, credo                                                                                       | mix format          |
-| Gleam                 | ✓   | lsp, gleam-check                                                                                               | gleam format        |
-| OCaml                 | ✓   | lsp                                                                                                            | ocamlformat         |
-| Clojure               | ✓   | lsp                                                                                                            | —                   |
-| Terraform             | ✓   | lsp, tflint                                                                                                    | terraform fmt       |
-| Nix                   | ✓   | lsp                                                                                                            | nixfmt              |
-| TOML                  | ✓   | lsp, taplo                                                                                                     | taplo               |
-| CMake                 | ✓   | lsp                                                                                                            | —                   |
+| Language              | LSP | Dispatch Runners                                                                                               | Formatter               |
+| --------------------- | --- | -------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| JavaScript/TypeScript | ✓   | lsp, ts-lsp, biome-check-json, tree-sitter, ast-grep-napi, type-safety, similarity, fact-rules, eslint, oxlint | biome, prettier         |
+| Python                | ✓   | lsp, pyright, ruff-lint, tree-sitter, python-slop                                                              | ruff, black             |
+| Go                    | ✓   | lsp, go-vet, golangci-lint, tree-sitter                                                                        | gofmt                   |
+| Rust                  | ✓   | lsp, rust-clippy, tree-sitter                                                                                  | rustfmt                 |
+| Ruby                  | ✓   | lsp, rubocop, tree-sitter                                                                                      | rubocop, standardrb     |
+| C/C++                 | ✓   | lsp, cpp-check, tree-sitter                                                                                    | clang-format            |
+| Shell                 | ✓   | lsp, shellcheck                                                                                                | shfmt                   |
+| Fish                  | ✓   | lsp, fish-indent                                                                                               | fish_indent             |
+| CSS/SCSS/Less         | ✓   | lsp, stylelint                                                                                                 | biome, prettier         |
+| HTML                  | ✓   | lsp, htmlhint                                                                                                  | prettier                |
+| YAML                  | ✓   | lsp, yamllint                                                                                                  | prettier                |
+| JSON                  | ✓   | lsp                                                                                                            | biome, prettier         |
+| Svelte                | ✓   | lsp                                                                                                            | —                       |
+| Vue                   | ✓   | lsp                                                                                                            | —                       |
+| SQL                   | —   | sqlfluff                                                                                                       | sqlfluff                |
+| Markdown              | —   | spellcheck, markdownlint, vale                                                                                 | prettier                |
+| Docker                | ✓   | lsp, hadolint                                                                                                  | —                       |
+| PHP                   | ✓   | lsp, php-lint, phpstan                                                                                         | php-cs-fixer            |
+| PowerShell            | ✓   | lsp, psscriptanalyzer                                                                                          | psscriptanalyzer-format |
+| Prisma                | ✓   | lsp, prisma-validate                                                                                           | —                       |
+| C#                    | ✓   | lsp, dotnet-build                                                                                              | csharpier               |
+| F#                    | ✓   | lsp                                                                                                            | fantomas                |
+| Java                  | ✓   | lsp, javac                                                                                                     | google-java-format      |
+| Kotlin                | ✓   | lsp, ktlint, detekt                                                                                            | ktlint                  |
+| Swift                 | ✓   | lsp, swiftlint                                                                                                 | swiftformat             |
+| Dart                  | ✓   | lsp, dart-analyze                                                                                              | dart format             |
+| Lua                   | ✓   | lsp                                                                                                            | stylua                  |
+| Zig                   | ✓   | lsp, zig-check                                                                                                 | zig fmt                 |
+| Haskell               | ✓   | lsp                                                                                                            | ormolu                  |
+| Elixir                | ✓   | lsp, elixir-check, credo                                                                                       | mix format              |
+| Gleam                 | ✓   | lsp, gleam-check                                                                                               | gleam format            |
+| OCaml                 | ✓   | lsp                                                                                                            | ocamlformat             |
+| Clojure               | ✓   | lsp                                                                                                            | cljfmt                  |
+| Terraform             | ✓   | lsp, tflint                                                                                                    | terraform fmt           |
+| Nix                   | ✓   | lsp                                                                                                            | nixfmt                  |
+| TOML                  | ✓   | lsp, taplo                                                                                                     | taplo                   |
+| CMake                 | ✓   | lsp                                                                                                            | cmake-format            |

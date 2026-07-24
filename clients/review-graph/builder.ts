@@ -11,7 +11,9 @@ import {
 	importFactProvider,
 } from "../dispatch/facts/import-facts.js";
 import type { DispatchContext } from "../dispatch/types.js";
+import { featureHintMetadata } from "../feature-hints.js";
 import { detectFileKind } from "../file-kinds.js";
+import { detectFileRole } from "../file-role.js";
 import { normalizeMapKey } from "../path-utils.js";
 import { getSourceFiles } from "../scan-utils.js";
 import { TreeSitterClient } from "../tree-sitter-client.js";
@@ -21,8 +23,8 @@ import {
 } from "../tree-sitter-symbol-extractor.js";
 import type { ReviewGraph, ReviewGraphEdge, ReviewGraphNode } from "./types.js";
 
-const REVIEW_GRAPH_VERSION = "v1";
-const MAIN_KINDS = new Set(["jsts", "python", "go", "rust", "ruby"]);
+const REVIEW_GRAPH_VERSION = "v2";
+const MAIN_KINDS = new Set(["jsts", "python", "go", "rust", "ruby", "cxx"]);
 const CHANGED_SYMBOLS_PREFIX = "session.reviewGraph.changedSymbols:";
 const treeSitterClient = new TreeSitterClient();
 const extractorCache = new Map<string, TreeSitterSymbolExtractor>();
@@ -34,9 +36,12 @@ const extractorCache = new Map<string, TreeSitterSymbolExtractor>();
 const _buildCache = new Map<string, Promise<ReviewGraph>>();
 const _workspaceGraphCache = new Map<
 	string,
-	{ signature: string; graph: ReviewGraph }
+	{ signature: string; fileSignatures: Map<string, string>; graph: ReviewGraph }
 >();
-let _lastGraphBuildInfo: { reused: boolean; mode: "full" | "cached" } = {
+let _lastGraphBuildInfo: {
+	reused: boolean;
+	mode: "full" | "cached" | "incremental";
+} = {
 	reused: false,
 	mode: "full",
 };
@@ -53,7 +58,7 @@ export function clearReviewGraphWorkspaceCache(): void {
 
 export function getLastGraphBuildInfo(): {
 	reused: boolean;
-	mode: "full" | "cached";
+	mode: "full" | "cached" | "incremental";
 } {
 	return _lastGraphBuildInfo;
 }
@@ -67,6 +72,7 @@ function makeCtx(
 		filePath,
 		cwd,
 		kind: detectFileKind(filePath),
+		fileRole: detectFileRole(filePath),
 		pi: { getFlag: () => undefined },
 		autofix: false,
 		deltaMode: false,
@@ -110,17 +116,42 @@ function cloneGraph(graph: ReviewGraph): ReviewGraph {
 	};
 }
 
-function sourceSignature(files: string[]): string {
-	return files
-		.map((file) => {
-			try {
-				const stat = fs.statSync(file);
-				return `${file}:${stat.size}:${stat.mtimeMs}`;
-			} catch {
-				return `${file}:missing`;
-			}
-		})
+function sourceSignatureEntry(file: string): string {
+	try {
+		const stat = fs.statSync(file);
+		return `${stat.size}:${stat.mtimeMs}`;
+	} catch {
+		return "missing";
+	}
+}
+
+function sourceSignatureMap(files: string[]): Map<string, string> {
+	const signatures = new Map<string, string>();
+	for (const file of files) {
+		signatures.set(file, sourceSignatureEntry(file));
+	}
+	return signatures;
+}
+
+function sourceSignatureFromMap(signatures: Map<string, string>): string {
+	return [...signatures.entries()]
+		.sort(([a], [b]) => a.localeCompare(b))
+		.map(([file, signature]) => `${file}:${signature}`)
 		.join("|");
+}
+
+function changedSignatureFiles(
+	previous: Map<string, string>,
+	next: Map<string, string>,
+): string[] | undefined {
+	if (previous.size !== next.size) return undefined;
+	const changed: string[] = [];
+	for (const [file, signature] of next) {
+		const oldSignature = previous.get(file);
+		if (oldSignature === undefined) return undefined;
+		if (oldSignature !== signature) changed.push(file);
+	}
+	return changed;
 }
 
 function getGraphSourceFiles(cwd: string): string[] {
@@ -180,13 +211,16 @@ interface PersistedGraphData {
 	version: string;
 	builtAt: string;
 	signature: string;
+	fileSignatures?: Array<[string, string]>;
 	nodes: Array<[string, ReviewGraphNode]>;
 	edges: ReviewGraphEdge[];
 }
 
-function loadPersistedGraph(
-	cwd: string,
-): { signature: string; graph: ReviewGraph } | null {
+function loadPersistedGraph(cwd: string): {
+	signature: string;
+	fileSignatures: Map<string, string>;
+	graph: ReviewGraph;
+} | null {
 	const cachePath = path.join(cwd, GRAPH_CACHE_REL);
 	try {
 		const raw = fs.readFileSync(cachePath, "utf-8");
@@ -204,26 +238,39 @@ function loadPersistedGraph(
 			changedSymbolsByFile: new Map(),
 		};
 		rebuildIndexes(graph);
-		return { signature: data.signature, graph };
+		return {
+			signature: data.signature,
+			fileSignatures: new Map(data.fileSignatures ?? []),
+			graph,
+		};
 	} catch {
 		return null;
 	}
 }
 
-function persistGraph(cwd: string, signature: string, graph: ReviewGraph): void {
+function persistGraph(
+	cwd: string,
+	signature: string,
+	fileSignatures: Map<string, string>,
+	graph: ReviewGraph,
+): void {
 	const cacheDir = path.join(cwd, ".pi-lens", "cache");
 	const cachePath = path.join(cwd, GRAPH_CACHE_REL);
 	const data: PersistedGraphData = {
 		version: graph.version,
 		builtAt: graph.builtAt,
 		signature,
+		fileSignatures: Array.from(fileSignatures.entries()),
 		nodes: Array.from(graph.nodes.entries()),
 		edges: graph.edges,
 	};
 	const json = JSON.stringify(data);
 	fs.mkdir(cacheDir, { recursive: true }, (mkdirErr) => {
 		if (mkdirErr) {
-			console.error("[review-graph] cache dir creation failed:", mkdirErr.message);
+			console.error(
+				"[review-graph] cache dir creation failed:",
+				mkdirErr.message,
+			);
 			return;
 		}
 		fs.writeFile(cachePath, json, "utf-8", (writeErr) => {
@@ -303,6 +350,7 @@ function addJsTsFile(
 		filePath: normalized,
 		metadata: {
 			lineCount: content.split("\n").length,
+			...featureHintMetadata(normalized),
 		},
 	});
 
@@ -360,6 +408,7 @@ function addJsTsFile(
 				maxNestingDepth: fn.maxNestingDepth,
 				isBoundaryWrapper: fn.isBoundaryWrapper,
 				isPassThroughWrapper: fn.isPassThroughWrapper,
+				...featureHintMetadata(`${fn.name} ${normalized}`),
 			},
 		});
 		addEdge(graph, { from: fileNodeId, to: symbolId, kind: "contains" });
@@ -389,6 +438,7 @@ function addJsTsFile(
 
 function mapKindToTreeSitterLanguage(
 	kind: string | undefined,
+	filePath?: string,
 ): string | undefined {
 	switch (kind) {
 		case "python":
@@ -399,6 +449,10 @@ function mapKindToTreeSitterLanguage(
 			return "rust";
 		case "ruby":
 			return "ruby";
+		case "cxx": {
+			const ext = filePath ? path.extname(filePath).toLowerCase() : "";
+			return ext === ".c" || ext === ".h" ? "c" : "cpp";
+		}
 		default:
 			return undefined;
 	}
@@ -443,6 +497,7 @@ function addTreeSitterFile(
 		kind: "file",
 		language: languageId,
 		filePath: normalized,
+		metadata: featureHintMetadata(normalized),
 	});
 
 	for (const symbol of extracted.symbols) {
@@ -459,6 +514,7 @@ function addTreeSitterFile(
 				line: symbol.line,
 				column: symbol.column,
 				signature: symbol.signature,
+				...featureHintMetadata(`${symbol.name} ${normalized}`),
 			},
 		});
 		addEdge(graph, { from: fileNodeId, to: symbolId, kind: "contains" });
@@ -482,6 +538,186 @@ function addTreeSitterFile(
 			kind: "references",
 			metadata: { line: ref.line, column: ref.column },
 		});
+	}
+}
+
+function ensureFileNode(
+	graph: ReviewGraph,
+	filePath: string,
+	languageId: string,
+): string {
+	const normalized = normalizeMapKey(filePath);
+	const existing = graph.fileNodes.get(normalized);
+	if (existing) return existing;
+	const fileNodeId = `file:${normalized}`;
+	addNode(graph, {
+		id: fileNodeId,
+		kind: "file",
+		language: languageId,
+		filePath: normalized,
+		metadata: featureHintMetadata(normalized),
+	});
+	return fileNodeId;
+}
+
+function resolveCxxInclude(
+	cwd: string,
+	filePath: string,
+	source: string,
+): string | undefined {
+	const candidates = [
+		path.resolve(path.dirname(filePath), source),
+		path.resolve(cwd, source),
+		path.resolve(cwd, "include", source),
+		path.resolve(cwd, "src", source),
+	];
+	const root = path.resolve(cwd);
+	for (const candidate of candidates) {
+		if (!candidate.startsWith(root + path.sep) && candidate !== root) continue;
+		if (fs.existsSync(candidate) && detectFileKind(candidate) === "cxx") {
+			return normalizeMapKey(candidate);
+		}
+	}
+	return undefined;
+}
+
+function parseLocalCxxInclude(line: string): string | undefined {
+	let i = 0;
+	while (i < line.length && (line[i] === " " || line[i] === "\t")) i += 1;
+	if (line[i] !== "#") return undefined;
+	i += 1;
+	while (i < line.length && (line[i] === " " || line[i] === "\t")) i += 1;
+	if (!line.startsWith("include", i)) return undefined;
+	i += "include".length;
+	if (i >= line.length || (line[i] !== " " && line[i] !== "\t")) {
+		return undefined;
+	}
+	while (i < line.length && (line[i] === " " || line[i] === "\t")) i += 1;
+	if (line[i] !== '"') return undefined;
+	i += 1;
+	const start = i;
+	while (i < line.length && line[i] !== '"') i += 1;
+	if (i >= line.length || i === start) return undefined;
+	return line.slice(start, i);
+}
+
+function addCxxIncludeEdges(
+	graph: ReviewGraph,
+	cwd: string,
+	filePath: string,
+): void {
+	let content = "";
+	try {
+		content = fs.readFileSync(filePath, "utf-8");
+	} catch {
+		return;
+	}
+	const fromNode = ensureFileNode(graph, filePath, "cpp");
+	for (const line of content.split(/\r?\n/)) {
+		const source = parseLocalCxxInclude(line);
+		if (!source) continue;
+		const target = resolveCxxInclude(cwd, filePath, source);
+		if (!target) continue;
+		const languageId = mapKindToTreeSitterLanguage("cxx", target) ?? "cpp";
+		const toNode = ensureFileNode(graph, target, languageId);
+		addEdge(graph, {
+			from: fromNode,
+			to: toNode,
+			kind: "imports",
+			metadata: { source },
+		});
+	}
+}
+
+function removeFileOwnedGraphData(
+	graph: ReviewGraph,
+	filePath: string,
+): ReviewGraphEdge[] {
+	const normalized = normalizeMapKey(filePath);
+	const fileNodeId = `file:${normalized}`;
+	const removedIds = new Set<string>();
+	const removedSymbolIds = new Set<string>();
+	for (const [id, node] of graph.nodes) {
+		if (node.filePath !== normalized) continue;
+		removedIds.add(id);
+		if (node.kind === "symbol") removedSymbolIds.add(id);
+	}
+	if (graph.nodes.has(fileNodeId)) removedIds.add(fileNodeId);
+
+	const preservedIncomingSymbolEdges: ReviewGraphEdge[] = [];
+	graph.edges = graph.edges.filter((edge) => {
+		const fromRemoved = removedIds.has(edge.from);
+		const toRemoved = removedIds.has(edge.to);
+		if (fromRemoved) return false;
+		if (removedSymbolIds.has(edge.to)) {
+			preservedIncomingSymbolEdges.push({ ...edge });
+			return false;
+		}
+		// Preserve importer edges to the stable file node id; the node is re-added below.
+		if (toRemoved && edge.to === fileNodeId) return true;
+		return !toRemoved;
+	});
+	for (const id of removedIds) graph.nodes.delete(id);
+	rebuildIndexes(graph);
+	return preservedIncomingSymbolEdges;
+}
+
+async function addFileToGraph(
+	graph: ReviewGraph,
+	cwd: string,
+	file: string,
+	facts: FactStore,
+): Promise<void> {
+	const kind = detectFileKind(file);
+	if (!kind || !MAIN_KINDS.has(kind)) return;
+	if (kind === "jsts") {
+		await ensureTsFacts(file, cwd, facts);
+		addJsTsFile(graph, cwd, file, facts);
+		return;
+	}
+	const languageId = mapKindToTreeSitterLanguage(kind, file);
+	if (!languageId) return;
+	const extracted = await extractTreeSitterSymbols(file, languageId);
+	addTreeSitterFile(graph, file, languageId, extracted);
+	if (kind === "cxx") addCxxIncludeEdges(graph, cwd, file);
+}
+
+function restoreValidIncomingEdges(
+	graph: ReviewGraph,
+	edges: ReviewGraphEdge[],
+): void {
+	const existing = new Set(
+		graph.edges.map(
+			(edge) =>
+				`${edge.from}\u0000${edge.to}\u0000${edge.kind}\u0000${JSON.stringify(edge.metadata ?? {})}`,
+		),
+	);
+	for (const edge of edges) {
+		if (!graph.nodes.has(edge.from) || !graph.nodes.has(edge.to)) continue;
+		const key = `${edge.from}\u0000${edge.to}\u0000${edge.kind}\u0000${JSON.stringify(edge.metadata ?? {})}`;
+		if (existing.has(key)) continue;
+		graph.edges.push(edge);
+		existing.add(key);
+	}
+	rebuildIndexes(graph);
+}
+
+async function updateGraphFiles(
+	graph: ReviewGraph,
+	cwd: string,
+	files: string[],
+	facts: FactStore,
+): Promise<void> {
+	const preservedIncoming: ReviewGraphEdge[] = [];
+	for (const file of files) {
+		preservedIncoming.push(...removeFileOwnedGraphData(graph, file));
+		await addFileToGraph(graph, cwd, file, facts);
+	}
+	restoreValidIncomingEdges(graph, preservedIncoming);
+	resolveDeferredSymbolEdges(graph);
+	graph.changedSymbolsByFile.clear();
+	for (const file of files) {
+		upsertChangedSymbols(graph, facts, file);
 	}
 }
 
@@ -514,8 +750,10 @@ async function _doBuildGraph(
 ): Promise<ReviewGraph> {
 	const normalizedCwd = normalizeMapKey(cwd);
 	const normalizedChanged = changedFiles.map((file) => normalizeMapKey(file));
+	const normalizedChangedSet = new Set(normalizedChanged);
 	const filesToBuild = getGraphSourceFiles(cwd);
-	const signature = sourceSignature(filesToBuild);
+	const fileSignatures = sourceSignatureMap(filesToBuild);
+	const signature = sourceSignatureFromMap(fileSignatures);
 
 	// Tier 1: in-memory cache (hot path — same process, already built this session)
 	const memCached = _workspaceGraphCache.get(normalizedCwd);
@@ -527,6 +765,28 @@ async function _doBuildGraph(
 			upsertChangedSymbols(graph, facts, file);
 		}
 		_lastGraphBuildInfo = { reused: true, mode: "cached" };
+		facts.setSessionFact("session.reviewGraph", graph);
+		return graph;
+	}
+	const memChanged = memCached
+		? changedSignatureFiles(memCached.fileSignatures, fileSignatures)
+		: undefined;
+	if (
+		memCached &&
+		memChanged !== undefined &&
+		memChanged.length > 0 &&
+		memChanged.every((file) => normalizedChangedSet.has(file))
+	) {
+		const graph = cloneGraph(memCached.graph);
+		await updateGraphFiles(graph, cwd, memChanged, facts);
+		const graphSnapshot = cloneGraph(graph);
+		_workspaceGraphCache.set(normalizedCwd, {
+			signature,
+			fileSignatures: new Map(fileSignatures),
+			graph: graphSnapshot,
+		});
+		persistGraph(cwd, signature, fileSignatures, graphSnapshot);
+		_lastGraphBuildInfo = { reused: true, mode: "incremental" };
 		facts.setSessionFact("session.reviewGraph", graph);
 		return graph;
 	}
@@ -542,9 +802,33 @@ async function _doBuildGraph(
 		}
 		_workspaceGraphCache.set(normalizedCwd, {
 			signature,
+			fileSignatures: new Map(fileSignatures),
 			graph: cloneGraph(diskCached.graph),
 		});
 		_lastGraphBuildInfo = { reused: true, mode: "cached" };
+		facts.setSessionFact("session.reviewGraph", graph);
+		return graph;
+	}
+	const diskChanged =
+		diskCached && diskCached.fileSignatures.size > 0
+			? changedSignatureFiles(diskCached.fileSignatures, fileSignatures)
+			: undefined;
+	if (
+		diskCached &&
+		diskChanged !== undefined &&
+		diskChanged.length > 0 &&
+		diskChanged.every((file) => normalizedChangedSet.has(file))
+	) {
+		const graph = cloneGraph(diskCached.graph);
+		await updateGraphFiles(graph, cwd, diskChanged, facts);
+		const graphSnapshot = cloneGraph(graph);
+		_workspaceGraphCache.set(normalizedCwd, {
+			signature,
+			fileSignatures: new Map(fileSignatures),
+			graph: graphSnapshot,
+		});
+		persistGraph(cwd, signature, fileSignatures, graphSnapshot);
+		_lastGraphBuildInfo = { reused: true, mode: "incremental" };
 		facts.setSessionFact("session.reviewGraph", graph);
 		return graph;
 	}
@@ -552,18 +836,8 @@ async function _doBuildGraph(
 	// Tier 3: full build
 	const graph = createEmptyGraph();
 	for (const file of filesToBuild) {
-		const kind = detectFileKind(file);
-		if (!kind || !MAIN_KINDS.has(kind)) continue;
-		if (kind === "jsts") {
-			await ensureTsFacts(file, cwd, facts);
-			addJsTsFile(graph, cwd, file, facts);
-		} else {
-			const languageId = mapKindToTreeSitterLanguage(kind);
-			if (!languageId) continue;
-			const extracted = await extractTreeSitterSymbols(file, languageId);
-			addTreeSitterFile(graph, file, languageId, extracted);
-		}
-		if (normalizedChanged.includes(file)) {
+		await addFileToGraph(graph, cwd, file, facts);
+		if (normalizedChangedSet.has(file)) {
 			upsertChangedSymbols(graph, facts, file);
 		}
 	}
@@ -572,8 +846,12 @@ async function _doBuildGraph(
 	graph.version = REVIEW_GRAPH_VERSION;
 	graph.builtAt = new Date().toISOString();
 	const graphSnapshot = cloneGraph(graph);
-	_workspaceGraphCache.set(normalizedCwd, { signature, graph: graphSnapshot });
-	persistGraph(cwd, signature, graphSnapshot); // fire-and-forget
+	_workspaceGraphCache.set(normalizedCwd, {
+		signature,
+		fileSignatures: new Map(fileSignatures),
+		graph: graphSnapshot,
+	});
+	persistGraph(cwd, signature, fileSignatures, graphSnapshot); // fire-and-forget
 	_lastGraphBuildInfo = { reused: false, mode: "full" };
 	facts.setSessionFact("session.reviewGraph", graph);
 	return graph;

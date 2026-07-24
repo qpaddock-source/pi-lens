@@ -256,29 +256,26 @@ function scheduleStartupScans(
 
 	// Knip — dead code / unused exports
 	runTask("knip", async () => {
-		if (await knipClient.ensureAvailable()) {
+		if (!runtime.isCurrentSession(sessionGeneration)) return;
+		const cached = cacheManager.readCache<KnipResult>("knip", analysisRoot);
+		if (cached) {
 			if (!runtime.isCurrentSession(sessionGeneration)) return;
-			const cached = cacheManager.readCache<KnipResult>("knip", analysisRoot);
-			if (cached) {
-				if (!runtime.isCurrentSession(sessionGeneration)) return;
-				dbg(
-					`session_start Knip: cache hit (${Math.round((Date.now() - new Date(cached.meta.timestamp).getTime()) / 1000)}s ago)`,
-				);
-			} else {
-				const startMs = Date.now();
-				const knipResult = await knipClient.analyze(
-					analysisRoot,
-					getKnipIgnorePatterns(),
-				);
-				if (!runtime.isCurrentSession(sessionGeneration)) return;
-				cacheManager.writeCache("knip", knipResult, analysisRoot, {
-					scanDurationMs: Date.now() - startMs,
-				});
-				dbg(`session_start Knip scan done (${Date.now() - startMs}ms)`);
-			}
+			dbg(
+				`session_start Knip: cache hit (${Math.round((Date.now() - new Date(cached.meta.timestamp).getTime()) / 1000)}s ago)`,
+			);
 		} else {
+			// KnipClient skips before probing/installing when analysisRoot is not a real
+			// JS/Knip project. This avoids running knip from Unity/C#/generic repos.
+			const startMs = Date.now();
+			const knipResult = await knipClient.analyze(
+				analysisRoot,
+				getKnipIgnorePatterns(),
+			);
 			if (!runtime.isCurrentSession(sessionGeneration)) return;
-			dbg("session_start Knip: not available");
+			cacheManager.writeCache("knip", knipResult, analysisRoot, {
+				scanDurationMs: Date.now() - startMs,
+			});
+			dbg(`session_start Knip scan done (${Date.now() - startMs}ms)`);
 		}
 	});
 
@@ -578,7 +575,7 @@ export async function handleSessionStart(
 	dbg(`session_start tools: ${tools.join(", ")}`);
 
 	const agentStartupGuidance = [
-		"📌 pi-lens active — automated checks run on your edits and writes. Blocking errors will be shown inline; you must fix all errors including pre-existing ones. Prefer: lsp_navigation for definitions/references, ast_grep_search for code patterns, grep for text/TODO search.",
+		"📌 pi-lens active — automated checks run on your edits and writes. Blocking errors will be shown inline; you must fix all errors including pre-existing ones. Prefer: lsp_diagnostics for proactive file/folder/batch error checks, lsp_navigation for definitions/references/symbols, ast_grep_search for code patterns (retry once with a simpler valid AST pattern on zero matches), grep for text/TODO search.",
 	];
 
 	runtime.projectRulesScan = scanProjectRules(analysisRoot);

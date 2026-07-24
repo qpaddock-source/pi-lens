@@ -20,6 +20,7 @@ import { createLSPClient } from "./client.js";
 import { getServersForFileWithConfig } from "./config.js";
 import { getLanguageId } from "./language.js";
 import type { LSPServerInfo } from "./server.js";
+import { isDirectLspCommandTemporarilyUnavailable } from "./server.js";
 import { getStrategy } from "./server-strategies.js";
 import { raceToCompletion } from "./aggregation.js";
 
@@ -96,6 +97,17 @@ export interface SpawnedServer {
 	info: LSPServerInfo;
 }
 
+export interface LSPDiagnosticsHealth {
+	health: "ok" | "ok_empty" | "no_clients" | "no_clients_stale" | "destroyed";
+	failureKind: string;
+	serverCountAttempted: number;
+	serverCountReady: number;
+	candidateServerIds: string[];
+	mergedCount: number;
+	dedupDroppedCount: number;
+	checkedAt: string;
+}
+
 function mergeLspDiagnostics(
 	diagnostics: import("./client.js").LSPDiagnostic[],
 ): import("./client.js").LSPDiagnostic[] {
@@ -138,6 +150,8 @@ export class LSPService {
 	private readonly optionalDisabled = new Set<string>();
 	/** Consecutive failure counts for exponential backoff circuit breaker */
 	private readonly failureCounts = new Map<string, number>();
+	/** Server/root keys disabled for the rest of this session after repeated failures. */
+	private readonly permanentlyBroken = new Set<string>();
 	/**
 	 * Last non-empty diagnostic result per normalized file path.
 	 * Returned as a fallback when no live LSP clients are available so the
@@ -146,6 +160,10 @@ export class LSPService {
 	private readonly lastKnownDiagnostics = new Map<
 		string,
 		import("./client.js").LSPDiagnostic[]
+	>();
+	private readonly lastDiagnosticsHealth = new Map<
+		string,
+		LSPDiagnosticsHealth
 	>();
 	private readonly recentTouches = new Map<
 		string,
@@ -290,14 +308,17 @@ export class LSPService {
 			return withBudget();
 		}
 
-		const timeoutResult = await Promise.race<SpawnedServer | undefined>([
+		const timeoutSentinel = Symbol("lsp-client-wait-timeout");
+		const waitResult = await Promise.race<
+			SpawnedServer | undefined | typeof timeoutSentinel
+		>([
 			withBudget(),
-			new Promise<undefined>((resolve) =>
-				setTimeout(() => resolve(undefined), effectiveMaxWaitMs),
+			new Promise<typeof timeoutSentinel>((resolve) =>
+				setTimeout(() => resolve(timeoutSentinel), effectiveMaxWaitMs),
 			),
 		]);
 
-		if (!timeoutResult) {
+		if (waitResult === timeoutSentinel) {
 			// Snapshot known client health — scan by serverId prefix (no root needed)
 			const knownHealth = [...this.state.clients.entries()]
 				.filter(([k]) => servers.some((s) => k.startsWith(`${s.id}:`)))
@@ -318,9 +339,10 @@ export class LSPService {
 					knownClientHealth: knownHealth,
 				},
 			});
+			return undefined;
 		}
 
-		return timeoutResult;
+		return waitResult;
 	}
 
 	/**
@@ -342,7 +364,9 @@ export class LSPService {
 			servers.map((server) => this.ensureClientForServer(filePath, server)),
 		);
 		return {
-			clients: spawned.filter((entry): entry is SpawnedServer => Boolean(entry)),
+			clients: spawned.filter((entry): entry is SpawnedServer =>
+				Boolean(entry),
+			),
 			serverCountAttempted,
 		};
 	}
@@ -380,7 +404,37 @@ export class LSPService {
 		const key = `${server.id}:${normalizedRoot}`;
 		const isOptionalServer = OPTIONAL_LSP_SERVER_IDS.has(server.id); // NOSONAR: set intentionally empty — no optional servers configured yet
 
+		if (
+			server.availabilityKey &&
+			isDirectLspCommandTemporarilyUnavailable(server.availabilityKey)
+		) {
+			logLatency({
+				type: "phase",
+				phase: "lsp_client_skipped_unavailable_command",
+				filePath,
+				durationMs: 0,
+				metadata: {
+					serverId: server.id,
+					command: server.availabilityKey,
+				},
+			});
+			return undefined;
+		}
+
 		if (isOptionalServer && this.optionalDisabled.has(key)) {
+			return undefined;
+		}
+		if (this.permanentlyBroken.has(key)) {
+			logLatency({
+				type: "phase",
+				phase: "lsp_client_skipped_broken",
+				filePath,
+				durationMs: 0,
+				metadata: {
+					serverId: server.id,
+					permanent: true,
+				},
+			});
 			return undefined;
 		}
 
@@ -493,6 +547,7 @@ export class LSPService {
 				);
 				this.state.broken.set(key, Date.now() + uCooldown);
 				if (uCount >= BROKEN_PERMANENT_AFTER) {
+					this.permanentlyBroken.add(key);
 					logSessionStart(
 						`lsp spawn ${server.id}: permanently disabled after ${uCount} failures`,
 					);
@@ -554,6 +609,7 @@ export class LSPService {
 					);
 			this.state.broken.set(key, Date.now() + eCooldown);
 			if (!isOptionalServer && eCount >= BROKEN_PERMANENT_AFTER) {
+				this.permanentlyBroken.add(key);
 				logSessionStart(
 					`lsp spawn ${server.id}: permanently disabled after ${eCount} failures`,
 				);
@@ -574,7 +630,11 @@ export class LSPService {
 		options?: { preserveDiagnostics?: boolean; spawnBudgetMs?: number },
 	): Promise<void> {
 		if (this.checkDestroyed()) return;
-		const spawned = await this.getClientForFile(filePath, undefined, options?.spawnBudgetMs);
+		const spawned = await this.getClientForFile(
+			filePath,
+			undefined,
+			options?.spawnBudgetMs,
+		);
 		if (!spawned) return;
 
 		const languageId = getLanguageId(filePath) ?? "plaintext";
@@ -623,9 +683,17 @@ export class LSPService {
 			spawned = result.clients;
 			serverCountAttempted = result.serverCountAttempted;
 		} else {
-			const entry = await this.getClientForFile(filePath, options.maxClientWaitMs);
+			const entry = await this.getClientForFile(
+				filePath,
+				options.maxClientWaitMs,
+			);
 			spawned = entry ? [entry] : [];
-			serverCountAttempted = spawned.length > 0 ? 1 : getServersForFileWithConfig(filePath).length > 0 ? 1 : 0;
+			serverCountAttempted =
+				spawned.length > 0
+					? 1
+					: getServersForFileWithConfig(filePath).length > 0
+						? 1
+						: 0;
 		}
 		if (spawned.length === 0) {
 			logLatency({
@@ -669,7 +737,7 @@ export class LSPService {
 					reason: "debounced_unchanged_content",
 				},
 			});
-			return;
+			return [];
 		}
 
 		const languageId = getLanguageId(filePath) ?? "plaintext";
@@ -720,22 +788,55 @@ export class LSPService {
 				collectedDiagnostics: collected?.length,
 			},
 		});
-		return collected;
+		return collected ?? [];
 	}
 
 	/**
 	 * Get diagnostics for a file
 	 */
+	getDiagnosticsHealth(filePath: string): LSPDiagnosticsHealth | undefined {
+		return this.lastDiagnosticsHealth.get(normalizeMapKey(filePath));
+	}
+
 	async getDiagnostics(
 		filePath: string,
 		diagnosticsMode: LSPDiagnosticsMode = "full",
 	): Promise<import("./client.js").LSPDiagnostic[]> {
-		if (this.checkDestroyed()) return [];
-		const startedAt = Date.now();
 		const normalizedPath = normalizeMapKey(filePath);
-		const { clients: spawned, serverCountAttempted } = await this.getClientsForFile(filePath);
+		if (this.checkDestroyed()) {
+			this.lastDiagnosticsHealth.set(normalizedPath, {
+				health: "destroyed",
+				failureKind: "destroyed",
+				serverCountAttempted: 0,
+				serverCountReady: 0,
+				candidateServerIds: getServersForFileWithConfig(filePath).map(
+					(s) => s.id,
+				),
+				mergedCount: 0,
+				dedupDroppedCount: 0,
+				checkedAt: new Date().toISOString(),
+			});
+			return [];
+		}
+		const startedAt = Date.now();
+		const candidateServerIds = getServersForFileWithConfig(filePath).map(
+			(s) => s.id,
+		);
+		const { clients: spawned, serverCountAttempted } =
+			await this.getClientsForFile(filePath);
 		if (spawned.length === 0) {
 			const stale = this.lastKnownDiagnostics.get(normalizedPath);
+			const failureKind = stale?.length ? "no_clients_stale" : "no_clients";
+			this.lastDiagnosticsHealth.set(normalizedPath, {
+				health: failureKind,
+				failureKind,
+				serverCountAttempted,
+				serverCountReady: 0,
+				candidateServerIds,
+				mergedCount: stale?.length ?? 0,
+				dedupDroppedCount: 0,
+				checkedAt: new Date().toISOString(),
+			});
 			logLatency({
 				type: "phase",
 				phase: "lsp_diagnostics_aggregate",
@@ -746,8 +847,8 @@ export class LSPService {
 					serverCountReady: 0,
 					mergedCount: stale?.length ?? 0,
 					dedupDroppedCount: 0,
-					failureKind: stale?.length ? "no_clients_stale" : "no_clients",
-					health: "no_clients",
+					failureKind,
+					health: failureKind,
 					servers: [],
 				},
 			});
@@ -853,6 +954,17 @@ export class LSPService {
 			(entry) => entry.diagnosticCount > 0,
 		).length;
 		const failureKind = merged.length === 0 ? "ok_empty" : "success";
+
+		this.lastDiagnosticsHealth.set(normalizedPath, {
+			health: failureKind === "success" ? "ok" : "ok_empty",
+			failureKind,
+			serverCountAttempted,
+			serverCountReady: perServerFull.length,
+			candidateServerIds,
+			mergedCount: merged.length,
+			dedupDroppedCount: rawCount - merged.length,
+			checkedAt: new Date().toISOString(),
+		});
 
 		logLatency({
 			type: "phase",

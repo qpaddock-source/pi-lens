@@ -550,6 +550,26 @@ const TOOLS: ToolDefinition[] = [
 		},
 	},
 	{
+		id: "swiftlint",
+		name: "SwiftLint",
+		checkCommand: "swiftlint",
+		checkArgs: ["--version"],
+		installStrategy: "github",
+		binaryName: "swiftlint",
+		github: {
+			repo: "realm/SwiftLint",
+			assetMatch: (platform, arch) => {
+				if (platform === "darwin") return "portable_swiftlint.zip";
+				if (platform === "linux")
+					return arch === "arm64"
+						? "swiftlint_linux_arm64.zip"
+						: "swiftlint_linux_amd64.zip";
+				return undefined;
+			},
+			binaryInArchive: "swiftlint",
+		},
+	},
+	{
 		id: "taplo",
 		name: "taplo",
 		checkCommand: "taplo",
@@ -570,6 +590,31 @@ const TOOLS: ToolDefinition[] = [
 				if (platform === "win32") return "taplo-windows-x86_64.gz";
 				return undefined;
 			},
+		},
+	},
+	{
+		id: "vale",
+		name: "Vale",
+		checkCommand: "vale",
+		checkArgs: ["--version"],
+		installStrategy: "github",
+		binaryName: "vale",
+		github: {
+			repo: "vale-cli/vale",
+			assetMatch: (platform, arch) => {
+				const version = "3.14.2";
+				if (platform === "linux")
+					return arch === "arm64"
+						? `vale_${version}_Linux_arm64.tar.gz`
+						: `vale_${version}_Linux_64-bit.tar.gz`;
+				if (platform === "darwin")
+					return arch === "arm64"
+						? `vale_${version}_macOS_arm64.tar.gz`
+						: `vale_${version}_macOS_64-bit.tar.gz`;
+				if (platform === "win32") return `vale_${version}_Windows_64-bit.zip`;
+				return undefined;
+			},
+			binaryInArchive: "vale",
 		},
 	},
 	{

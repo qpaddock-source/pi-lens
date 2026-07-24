@@ -198,13 +198,18 @@ describe("index.ts integration", () => {
 		expect(context).toBeTypeOf("function");
 
 		const userMessage = { role: "user", content: "Fix the bug" };
-		const result = await context?.({ messages: [userMessage] }, { cwd: tmpDir });
+		const result = await context?.(
+			{ messages: [userMessage] },
+			{ cwd: tmpDir },
+		);
 
 		expect(result).toEqual({
 			messages: [
 				expect.objectContaining({
 					role: "user",
-					content: expect.stringContaining("[pi-lens automated context — not a user request]"),
+					content: expect.stringContaining(
+						"[pi-lens automated context — not a user request]",
+					),
 				}),
 				userMessage,
 			],
@@ -650,7 +655,7 @@ describe("index.ts integration", () => {
 	}, 15_000);
 
 	it("tool_call only warms LSP on the first read until warm state is cleared", async () => {
-		const touchFileMock = vi.fn().mockResolvedValue(undefined);
+		const touchFileMock = vi.fn().mockResolvedValue([]);
 		const shouldWarmLspOnRead = vi
 			.fn()
 			.mockReturnValueOnce(true)
@@ -963,7 +968,11 @@ describe("index.ts integration", () => {
 					],
 				},
 			],
-			getCascadeSessionStats: () => ({ runs: 5, diagnosticsSurfaced: 3, coldSnapshotTouches: 2 }),
+			getCascadeSessionStats: () => ({
+				runs: 5,
+				diagnosticsSurfaced: 3,
+				coldSnapshotTouches: 2,
+			}),
 			resetDispatchBaselines: () => {},
 		}));
 		vi.doMock("../clients/diagnostic-tracker.js", async () => ({

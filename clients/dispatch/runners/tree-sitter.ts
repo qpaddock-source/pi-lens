@@ -17,6 +17,7 @@ import {
 import { TreeSitterClient } from "../../tree-sitter-client.js";
 import { logTreeSitter } from "../../tree-sitter-logger.js";
 import {
+	isDisabledQueryFilePath,
 	queryLoader,
 	type TreeSitterQuery,
 } from "../../tree-sitter-query-loader.js";
@@ -77,40 +78,63 @@ interface EntityQueryDef {
 	query: string;
 }
 
+// Queries that are identical across TypeScript and JavaScript grammars.
+const JSTS_SHARED_ENTITY_QUERIES: EntityQueryDef[] = [
+	{
+		id: "entity-jsts-function",
+		kind: "function",
+		query: "(function_declaration name: (identifier) @NAME)",
+	},
+	{
+		id: "entity-jsts-method",
+		kind: "method",
+		query: "(method_definition name: (property_identifier) @NAME)",
+	},
+	{
+		id: "entity-jsts-arrow",
+		kind: "function",
+		query:
+			"(lexical_declaration (variable_declarator name: (identifier) @NAME value: [(arrow_function) (function_expression)]))",
+	},
+];
+
+// TypeScript-only structural types — no JS equivalents in the grammar.
+const TS_STRUCTURAL_ENTITY_QUERIES: EntityQueryDef[] = [
+	{
+		id: "entity-ts-interface",
+		kind: "interface",
+		query: "(interface_declaration name: (type_identifier) @NAME)",
+	},
+	{
+		id: "entity-ts-type",
+		kind: "type",
+		query: "(type_alias_declaration name: (type_identifier) @NAME)",
+	},
+	{
+		id: "entity-ts-enum",
+		kind: "enum",
+		query: "(enum_declaration name: (identifier) @NAME)",
+	},
+];
+
 const ENTITY_QUERIES: Partial<Record<string, EntityQueryDef[]>> = {
 	typescript: [
-		{
-			id: "entity-ts-function",
-			kind: "function",
-			query: "(function_declaration name: (identifier) @NAME)",
-		},
+		// class name node differs between TS (type_identifier) and JS (identifier)
 		{
 			id: "entity-ts-class",
 			kind: "class",
 			query: "(class_declaration name: (type_identifier) @NAME)",
 		},
-		{
-			id: "entity-ts-method",
-			kind: "method",
-			query: "(method_definition name: (property_identifier) @NAME)",
-		},
+		...JSTS_SHARED_ENTITY_QUERIES,
+		...TS_STRUCTURAL_ENTITY_QUERIES,
 	],
 	javascript: [
-		{
-			id: "entity-js-function",
-			kind: "function",
-			query: "(function_declaration name: (identifier) @NAME)",
-		},
 		{
 			id: "entity-js-class",
 			kind: "class",
 			query: "(class_declaration name: (identifier) @NAME)",
 		},
-		{
-			id: "entity-js-method",
-			kind: "method",
-			query: "(method_definition name: (property_identifier) @NAME)",
-		},
+		...JSTS_SHARED_ENTITY_QUERIES,
 	],
 	python: [
 		{
@@ -157,12 +181,29 @@ const ENTITY_QUERIES: Partial<Record<string, EntityQueryDef[]>> = {
 			kind: "enum",
 			query: "(enum_item name: (type_identifier) @NAME)",
 		},
+		// trait changes break all implementors — critical for blast-radius
+		{
+			id: "entity-rs-trait",
+			kind: "trait",
+			query: "(trait_item name: (type_identifier) @NAME)",
+		},
+		{
+			id: "entity-rs-type",
+			kind: "type",
+			query: "(type_item name: (type_identifier) @NAME)",
+		},
 	],
 	ruby: [
 		{
 			id: "entity-rb-method",
 			kind: "method",
 			query: "(method name: (identifier) @NAME)",
+		},
+		// singleton methods (def self.foo) — class-level, miss changes without this
+		{
+			id: "entity-rb-singleton-method",
+			kind: "method",
+			query: "(singleton_method name: (identifier) @NAME)",
 		},
 		{
 			id: "entity-rb-class",
@@ -173,6 +214,52 @@ const ENTITY_QUERIES: Partial<Record<string, EntityQueryDef[]>> = {
 			id: "entity-rb-module",
 			kind: "module",
 			query: "(module name: (constant) @NAME)",
+		},
+	],
+	c: [
+		{
+			id: "entity-c-function",
+			kind: "function",
+			query:
+				"(function_definition declarator: (function_declarator declarator: (identifier) @NAME))",
+		},
+		{
+			id: "entity-c-typedef",
+			kind: "type",
+			query: "(type_definition declarator: (type_identifier) @NAME)",
+		},
+		{
+			id: "entity-c-struct",
+			kind: "struct",
+			query: "(struct_specifier name: (type_identifier) @NAME)",
+		},
+		{
+			id: "entity-c-enum",
+			kind: "enum",
+			query: "(enum_specifier name: (type_identifier) @NAME)",
+		},
+	],
+	cpp: [
+		{
+			id: "entity-cpp-function",
+			kind: "function",
+			query:
+				"(function_definition declarator: (function_declarator declarator: (identifier) @NAME))",
+		},
+		{
+			id: "entity-cpp-class",
+			kind: "class",
+			query: "(class_specifier name: (type_identifier) @NAME)",
+		},
+		{
+			id: "entity-cpp-struct",
+			kind: "struct",
+			query: "(struct_specifier name: (type_identifier) @NAME)",
+		},
+		{
+			id: "entity-cpp-namespace",
+			kind: "namespace",
+			query: "(namespace_definition name: (namespace_identifier) @NAME)",
 		},
 	],
 };
@@ -272,9 +359,43 @@ function getTotalLinesChanged(
 /** Threshold: skip entity extraction for changes under 5 lines */
 const ENTITY_EXTRACTION_LINE_THRESHOLD = 5;
 
+function resolveTreeSitterLanguage(filePath: string): string | undefined {
+	const ext = path.extname(filePath).toLowerCase();
+	const EXT_TO_LANG: Record<string, string> = {
+		".ts": "typescript",
+		".mts": "typescript",
+		".cts": "typescript",
+		".tsx": "tsx",
+		".js": "javascript",
+		".mjs": "javascript",
+		".cjs": "javascript",
+		".jsx": "javascript",
+		".py": "python",
+		".go": "go",
+		".rs": "rust",
+		".rb": "ruby",
+		".c": "c",
+		".h": "c",
+		".cc": "cpp",
+		".cpp": "cpp",
+		".cxx": "cpp",
+		".c++": "cpp",
+		".hh": "cpp",
+		".hpp": "cpp",
+		".hxx": "cpp",
+		".inl": "cpp",
+		".ipp": "cpp",
+		".tpp": "cpp",
+		".txx": "cpp",
+		".cu": "cpp",
+		".hip": "cpp",
+	};
+	return EXT_TO_LANG[ext];
+}
+
 const treeSitterRunner: RunnerDefinition = {
 	id: "tree-sitter",
-	appliesTo: ["jsts", "python", "go", "rust", "ruby"],
+	appliesTo: ["jsts", "python", "go", "rust", "ruby", "cxx"],
 	priority: PRIORITY.STRUCTURAL_ANALYSIS,
 	enabledByDefault: true,
 	skipTestFiles: false, // Run on test files too (structural issues matter there)
@@ -306,22 +427,8 @@ const treeSitterRunner: RunnerDefinition = {
 
 		// Determine language from file extension
 		const filePath = ctx.filePath;
-		const ext = filePath.slice(filePath.lastIndexOf("."));
-		const EXT_TO_LANG: Record<string, string> = {
-			".ts": "typescript",
-			".mts": "typescript",
-			".cts": "typescript",
-			".tsx": "tsx",
-			".js": "javascript",
-			".mjs": "javascript",
-			".cjs": "javascript",
-			".jsx": "javascript",
-			".py": "python",
-			".go": "go",
-			".rs": "rust",
-			".rb": "ruby",
-		};
-		const languageId = EXT_TO_LANG[ext];
+		const ext = path.extname(filePath).toLowerCase();
+		const languageId = resolveTreeSitterLanguage(filePath);
 		if (!languageId) {
 			logTreeSitter({
 				phase: "runner_skip",
@@ -366,24 +473,26 @@ const treeSitterRunner: RunnerDefinition = {
 		if (cached) {
 			// Use cached queries
 			cacheHit = true;
-			languageQueries = cached.queries.map(
-				(q) =>
-					({
-						...q,
-						has_fix: false,
-						filePath: "",
-					}) as TreeSitterQuery,
-			);
+			languageQueries = cached.queries
+				.map(
+					(q) =>
+						({
+							...q,
+							has_fix: false,
+							filePath: q.filePath ?? "",
+						}) as TreeSitterQuery,
+				)
+				.filter((q) => !isDisabledQueryFilePath(q.filePath));
 		} else {
 			// Load from disk
 			await queryLoader.loadQueries(ctx.cwd);
 
-			const allQueries = queryLoader.getAllQueries();
-			languageQueries = allQueries.filter(
-				(q) =>
-					q.language === languageId ||
-					(languageId === "javascript" && q.language === "typescript"),
-			);
+			languageQueries = queryLoader.getQueriesForLanguage(languageId);
+			if (languageId === "javascript") {
+				// JavaScript files also match TypeScript rules (shared grammar)
+				const tsQueries = queryLoader.getQueriesForLanguage("typescript");
+				languageQueries = [...languageQueries, ...tsQueries];
+			}
 
 			// Save to cache
 			cache.set(
@@ -400,6 +509,7 @@ const treeSitterRunner: RunnerDefinition = {
 					post_filter_params: q.post_filter_params,
 					defect_class: q.defect_class,
 					inline_tier: q.inline_tier,
+					filePath: q.filePath,
 				})),
 			);
 		}
@@ -507,9 +617,9 @@ const treeSitterRunner: RunnerDefinition = {
 							queryDiagnostics.push({
 								id: `tree-sitter:${query.id}:${line}`,
 								message: query.message.replace(
-								/\{\{(\w+)\}\}/g,
-								(_, name) => match.captures[name]?.trim() ?? `{{${name}}}`,
-							),
+									/\{\{(\w+)\}\}/g,
+									(_, name) => match.captures[name]?.trim() ?? `{{${name}}}`,
+								),
 								filePath,
 								line: line + 1, // 1-indexed
 								column: column + 1, // 1-indexed

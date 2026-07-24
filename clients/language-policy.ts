@@ -55,7 +55,13 @@ export const LANGUAGE_POLICY: Record<FileKind, LanguagePolicy> = {
 			heavyScansRequireConfig: true,
 		},
 	},
-	ruby: { lspCapable: true, startup: { defaults: ["rubocop"] } },
+	ruby: {
+		lspCapable: true,
+		startup: {
+			defaults: ["rubocop"],
+			heavyScansRequireConfig: true,
+		},
+	},
 	html: { lspCapable: true },
 	docker: { lspCapable: true },
 	php: { lspCapable: true },
@@ -120,7 +126,7 @@ const PRIMARY_DISPATCH_GROUPS: Partial<Record<FileKind, RunnerGroup>> = {
 	json: { mode: "fallback", runnerIds: ["lsp"], filterKinds: ["json"] },
 	markdown: {
 		mode: "fallback",
-		runnerIds: ["spellcheck"],
+		runnerIds: ["spellcheck", "vale"],
 		filterKinds: ["markdown"],
 	},
 	css: {
@@ -179,7 +185,11 @@ const PRIMARY_DISPATCH_GROUPS: Partial<Record<FileKind, RunnerGroup>> = {
 		runnerIds: ["lsp", "ktlint"],
 		filterKinds: ["kotlin"],
 	},
-	swift: { mode: "fallback", runnerIds: ["lsp"], filterKinds: ["swift"] },
+	swift: {
+		mode: "all",
+		runnerIds: ["lsp", "swiftlint"],
+		filterKinds: ["swift"],
+	},
 	dart: {
 		mode: "all",
 		runnerIds: ["lsp", "dart-analyze"],
